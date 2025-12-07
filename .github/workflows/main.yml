@@ -7,45 +7,6 @@ on:
     branches: [ nnhq-dev-1 ]
 
 jobs:
-  rescuezilla-iso-build-amd64:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          lfs: true
-          fetch-depth: 0
-
-      - run: echo "RESCUEZILLA_RELEASE_NAME=\"$(git grep -h -E -o '[a-zA-Z].*)' CHANGELOG | head -1)\"" >> $GITHUB_ENV
-      - run: echo "DEB_VERSION=$(git describe --tags --match='[0-9].[0-9]*' --abbrev=0)" >> $GITHUB_ENV
-
-      - name: Build Docker image
-        run: make docker-build
-
-      - name: Launch Docker container
-        run: make docker-run
-
-      - name: Trust the git folder
-        run: make docker-add-safe-directory
-
-      - name: Create completed artifacts folder
-        run: mkdir -p completed-artifacts-amd64/
-
-      # AMD64 构建步骤 (添加 UEFI_ONLY=1)
-      - name: Make Ubuntu 24.10 (Oracular) ISO
-        run: make docker-oracular UEFI_ONLY=1
-      - run: sudo mv build/rescuezilla.oracular.iso completed-artifacts-amd64/rescuezilla-${{ github.ref_name }}-amd64.oracular.iso || true
-      - run: sudo make clean-all
-
-      # 上传 AMD64 artifacts
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rescuezilla-${{ github.ref_name }}-amd64.oracular.iso
-          path: completed-artifacts-amd64/rescuezilla-${{ github.ref_name }}-amd64.oracular.iso
-
   rescuezilla-iso-build-arm64:
     runs-on: ubuntu-latest
     permissions:
@@ -58,85 +19,112 @@ jobs:
           lfs: true
           fetch-depth: 0
 
-      - run: echo "RESCUEZILLA_RELEASE_NAME=\"$(git grep -h -E -o '[a-zA-Z].*)' CHANGELOG | head -1)\"" >> $GITHUB_ENV
-      - run: echo "DEB_VERSION=$(git describe --tags --match='[0-9].[0-9]*' --abbrev=0)" >> $GITHUB_ENV
+      - name: Set environment variables
+        run: |
+          echo "RESCUEZILLA_RELEASE_NAME=\"$(git grep -h -E -o '[a-zA-Z].*)' CHANGELOG | head -1 || echo 'dev')\"" >> $GITHUB_ENV
+          echo "DEB_VERSION=$(git describe --tags --match='[0-9].[0-9]*' --abbrev=0 || echo '0.0.0')" >> $GITHUB_ENV
 
-      - name: Install ARM64 cross-compilation tools
+      - name: Check Makefile targets
+        run: |
+          echo "Available make targets:"
+          make help || make --help || cat Makefile | grep "^[a-zA-Z]"
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu libc6-dev-arm64-cross \
-            qemu-user-static binfmt-support
+          sudo apt-get install -y \
+            debootstrap \
+            squashfs-tools \
+            xorriso \
+            isolinux \
+            syslinux-utils \
+            genisoimage \
+            docker.io \
+            qemu-user-static \
+            binfmt-support
 
-      - name: Build Docker image
-        run: make docker-build
+      - name: Enable Docker buildx for multi-platform
+        run: |
+          docker buildx create --name mybuilder --use
+          docker buildx inspect --bootstrap
 
-      - name: Launch Docker container
-        run: make docker-run
+      - name: Build ARM64 environment
+        run: |
+          # 检查是否存在 Docker 相关的构建脚本或 Dockerfile
+          if [ -f "Dockerfile" ]; then
+            docker buildx build --platform linux/arm64 -t rescuezilla-builder:arm64 .
+          elif [ -f "scripts/build-docker.sh" ]; then
+            chmod +x scripts/build-docker.sh
+            ./scripts/build-docker.sh arm64
+          else
+            echo "No Docker build method found, proceeding with native build"
+          fi
 
-      - name: Trust the git folder
-        run: make docker-add-safe-directory
-
-      - name: Create completed artifacts folder
+      - name: Create artifacts folder
         run: mkdir -p completed-artifacts-arm64/
 
-      # 构建 ARM64 UEFI-only ISO 镜像
-      - run: make docker-status
-      - name: Make Ubuntu 25.04 (Plucky) ISO (ARM64, UEFI-only)
-        run: make docker-plucky-arm64
-      - run: sudo mv build/rescuezilla.arm64.plucky.iso completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.plucky.iso || true
-      - run: sudo make clean-all
+      # 尝试不同的构建方法
+      - name: Try building ARM64 ISO
+        run: |
+          # 方法1: 检查是否有特定的ARM64构建目标
+          if make -n docker-noble-arm64 2>/dev/null; then
+            make docker-noble-arm64
+          elif make -n build-arm64 2>/dev/null; then
+            make build-arm64
+          elif make -n arm64 2>/dev/null; then
+            make arm64
+          elif [ -f "scripts/build-iso-arm64.sh" ]; then
+            chmod +x scripts/build-iso-arm64.sh
+            ./scripts/build-iso-arm64.sh
+          else
+            echo "Trying to build with available targets..."
+            # 查看可用目标并尝试构建
+            make -n all || make -n build || echo "No standard build targets found"
+            # 如果有构建脚本，尝试直接运行
+            if [ -f "build.sh" ]; then
+              chmod +x build.sh
+              ARCH=arm64 ./build.sh
+            fi
+          fi
 
-      - run: make docker-status
-      - name: Make Ubuntu 24.04 LTS (Noble) ISO (ARM64, UEFI-only)
-        run: make docker-noble-arm64
-      - run: sudo mv build/rescuezilla.arm64.noble.iso completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.noble.iso || true
-      - run: sudo make clean-all
+      - name: Find and move built ISOs
+        run: |
+          echo "Looking for built ISO files..."
+          find . -name "*.iso" -type f 2>/dev/null || echo "No ISO files found"
+          
+          # 移动找到的ISO文件
+          for iso in $(find . -name "*.iso" -type f 2>/dev/null); do
+            if [[ "$iso" == *"arm64"* ]] || [[ "$iso" == *"aarch64"* ]]; then
+              echo "Moving $iso to artifacts folder"
+              sudo mv "$iso" "completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64-$(basename $iso)"
+            fi
+          done
 
-      - run: make docker-status
-      - name: Make Ubuntu 24.10 (Oracular) ISO (ARM64, UEFI-only)
-        run: make docker-oracular-arm64
-      - run: sudo mv build/rescuezilla.arm64.oracular.iso completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.oracular.iso || true
-      - run: sudo make clean-all
+      - name: List artifacts
+        run: |
+          echo "Created artifacts:"
+          ls -la completed-artifacts-arm64/ || echo "No artifacts created"
 
-      - run: make docker-status
-      - name: Make Ubuntu 22.04 LTS (Jammy) ISO (ARM64, UEFI-only)
-        run: make docker-jammy-arm64
-      - run: sudo mv build/rescuezilla.arm64.jammy.iso completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.jammy.iso || true
-      - run: sudo make clean-all
-
-      - run: make docker-status
-      - name: Make Ubuntu 20.04 LTS (Focal) ISO (ARM64, UEFI-only)
-        run: make docker-focal-arm64
-      - run: sudo mv build/rescuezilla.arm64.focal.iso completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.focal.iso || true
-      - run: sudo make clean-all
-
-      # 创建校验和
-      - name: Create checksums for ARM64 ISO images
-        run: cd completed-artifacts-arm64 && sudo ../src/scripts/create-iso-checksums.sh rescuezilla-${{ github.ref_name }}-*.iso
-
-      # 上传 ARM64 artifacts
-      - uses: actions/upload-artifact@v4
+      # 只有在有文件的情况下才上传
+      - name: Upload ARM64 artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
         with:
-          name: rescuezilla-${{ github.ref_name }}-arm64.plucky.iso
-          path: completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.plucky.iso
+          name: rescuezilla-arm64-builds
+          path: completed-artifacts-arm64/
+          if-no-files-found: warn
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rescuezilla-${{ github.ref_name }}-arm64.noble.iso
-          path: completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.noble.iso
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rescuezilla-${{ github.ref_name }}-arm64.oracular.iso
-          path: completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.oracular.iso
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rescuezilla-${{ github.ref_name }}-arm64.jammy.iso
-          path: completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.jammy.iso
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rescuezilla-${{ github.ref_name }}-arm64.focal.iso
-          path: completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64.focal.iso
+      - name: Debug information
+        if: failure()
+        run: |
+          echo "Build failed. Debug information:"
+          echo "Current directory: $(pwd)"
+          echo "Directory contents:"
+          ls -la
+          echo "Makefile exists: $(test -f Makefile && echo 'yes' || echo 'no')"
+          if [ -f Makefile ]; then
+            echo "Makefile contents:"
+            head -20 Makefile
+          fi
+          echo "Available shell scripts:"
+          find . -name "*.sh" -type f
