@@ -45,7 +45,7 @@ jobs:
           # 修复任何损坏的包
           sudo apt-get install -f
           
-          # 安装必要的依赖包（分批安装以避免冲突）
+          # 安装必要的依赖包
           sudo apt-get install -y \
             debootstrap \
             squashfs-tools \
@@ -54,25 +54,29 @@ jobs:
             syslinux-utils \
             genisoimage \
             qemu-user-static \
-            binfmt-support
+            binfmt-support \
+            make \
+            git
           
           # 单独安装 Docker
           sudo apt-get install -y docker.io || {
             echo "Failed to install docker.io, trying alternative method..."
-            # 如果还是失败，尝试从官方仓库安装
             curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
             echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
             sudo apt-get update
             sudo apt-get install -y docker-ce docker-ce-cli containerd.io
           }
 
-      - name: Start Docker service and add user
+      - name: Start Docker service and setup
         run: |
           sudo systemctl start docker
           sudo systemctl enable docker
           sudo usermod -aG docker $USER
           # 验证 Docker 安装
           sudo docker --version
+          # 启用实验性功能
+          echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
 
       - name: Enable Docker buildx for multi-platform
         run: |
@@ -81,88 +85,150 @@ jobs:
 
       - name: Setup QEMU for ARM64 emulation
         run: |
-          # 确保 binfmt 支持已启用
           sudo systemctl restart systemd-binfmt
-          # 验证 ARM64 支持
-          cat /proc/sys/fs/binfmt_misc/qemu-aarch64 || echo "ARM64 emulation may not be available"
+          sudo docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
-      - name: Build ARM64 environment
+      - name: Check if builder container needs to be created
         run: |
-          # 检查是否存在 Docker 相关的构建脚本或 Dockerfile
-          if [ -f "Dockerfile" ]; then
-            sudo docker buildx build --platform linux/arm64 -t rescuezilla-builder:arm64 . || echo "Docker build failed, continuing..."
-          elif [ -f "scripts/build-docker.sh" ]; then
-            chmod +x scripts/build-docker.sh
-            ./scripts/build-docker.sh arm64 || echo "Docker script failed, continuing..."
+          echo "Checking for existing builder container..."
+          sudo docker ps -a | grep builder.container || echo "No builder container found"
+          
+          # 检查是否有构建容器的 make target
+          if make -n docker-setup 2>/dev/null; then
+            echo "Found docker-setup target"
+            make docker-setup
+          elif make -n setup 2>/dev/null; then
+            echo "Found setup target"
+            make setup
           else
-            echo "No Docker build method found, proceeding with native build"
+            echo "No setup target found, will create container manually"
           fi
+
+      - name: Create builder container if needed
+        run: |
+          # 检查容器是否存在
+          if ! sudo docker ps -a | grep -q builder.container; then
+            echo "Creating builder container..."
+            
+            # 检查是否有 Dockerfile
+            if [ -f "Dockerfile" ]; then
+              echo "Building image from Dockerfile..."
+              sudo docker build -t rescuezilla-builder .
+              sudo docker create --name builder.container \
+                --platform linux/arm64 \
+                -v "$PWD":/home/rescuezilla \
+                -w /home/rescuezilla \
+                rescuezilla-builder
+            else
+              echo "Creating container from Ubuntu base image..."
+              sudo docker create --name builder.container \
+                --platform linux/arm64 \
+                -v "$PWD":/home/rescuezilla \
+                -w /home/rescuezilla \
+                ubuntu:22.04 \
+                /bin/bash -c "apt-get update && apt-get install -y build-essential debootstrap squashfs-tools xorriso isolinux syslinux-utils genisoimage && tail -f /dev/null"
+            fi
+            
+            # 启动容器
+            sudo docker start builder.container
+            
+            # 等待容器启动
+            sleep 10
+            
+            # 如果使用基础镜像，安装依赖
+            if [ ! -f "Dockerfile" ]; then
+              echo "Installing dependencies in container..."
+              sudo docker exec builder.container apt-get update
+              sudo docker exec builder.container apt-get install -y \
+                build-essential \
+                debootstrap \
+                squashfs-tools \
+                xorriso \
+                isolinux \
+                syslinux-utils \
+                genisoimage \
+                make \
+                git
+            fi
+          else
+            echo "Builder container already exists, starting it..."
+            sudo docker start builder.container || true
+          fi
+
+      - name: Verify container is running
+        run: |
+          echo "Checking container status..."
+          sudo docker ps | grep builder.container || {
+            echo "Container not running, attempting to start..."
+            sudo docker start builder.container
+            sleep 5
+          }
 
       - name: Create artifacts folder
         run: mkdir -p completed-artifacts-arm64/
 
-      # 尝试不同的构建方法
       - name: Try building ARM64 ISO
         run: |
-          # 设置交叉编译环境变量
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
+          # 确保容器正在运行
+          sudo docker start builder.container || true
+          sleep 5
           
-          # 方法1: 检查是否有特定的ARM64构建目标
+          echo "Attempting to build ARM64 ISO..."
+          
+          # 方法1: 尝试使用 make docker-noble-arm64
           if make -n docker-noble-arm64 2>/dev/null; then
             echo "Using docker-noble-arm64 target..."
-            make docker-noble-arm64
-          elif make -n build-arm64 2>/dev/null; then
-            echo "Using build-arm64 target..."
-            make build-arm64
-          elif make -n arm64 2>/dev/null; then
-            echo "Using arm64 target..."
-            make arm64
-          elif [ -f "scripts/build-iso-arm64.sh" ]; then
-            echo "Using ARM64 build script..."
-            chmod +x scripts/build-iso-arm64.sh
-            ./scripts/build-iso-arm64.sh
+            make docker-noble-arm64 UEFI_ONLY=1 || {
+              echo "docker-noble-arm64 failed, trying alternative..."
+              # 直接在容器中执行构建命令
+              sudo docker exec --interactive --workdir=/home/rescuezilla/ builder.container \
+                make noble-arm64 UEFI_ONLY=1 || echo "Direct container build failed"
+            }
           else
-            echo "Trying to build with available targets..."
-            # 查看可用目标并尝试构建
-            if make -n all 2>/dev/null; then
-              ARCH=arm64 make all
-            elif make -n build 2>/dev/null; then
-              ARCH=arm64 make build
-            elif [ -f "build.sh" ]; then
-              echo "Using build.sh script..."
-              chmod +x build.sh
-              ARCH=arm64 ./build.sh
+            echo "No docker-noble-arm64 target found, trying alternatives..."
+            
+            # 方法2: 直接在容器中构建
+            if sudo docker exec builder.container test -f /home/rescuezilla/Makefile; then
+              echo "Running make in container..."
+              sudo docker exec --workdir=/home/rescuezilla/ builder.container \
+                make noble-arm64 UEFI_ONLY=1 || \
+              sudo docker exec --workdir=/home/rescuezilla/ builder.container \
+                make arm64 || \
+              sudo docker exec --workdir=/home/rescuezilla/ builder.container \
+                make all ARCH=arm64
             else
-              echo "No suitable build method found"
-              exit 1
+              echo "Makefile not found in container, checking available files..."
+              sudo docker exec builder.container ls -la /home/rescuezilla/
             fi
           fi
 
-      - name: Find and move built ISOs
+      - name: Extract artifacts from container
         run: |
-          echo "Looking for built ISO files..."
-          find . -name "*.iso" -type f 2>/dev/null || echo "No ISO files found"
+          echo "Looking for built ISOs in container..."
+          # 查找容器中的 ISO 文件
+          sudo docker exec builder.container find /home/rescuezilla -name "*.iso" -type f 2>/dev/null || echo "No ISO files found in container"
           
-          # 移动找到的ISO文件
-          for iso in $(find . -name "*.iso" -type f 2>/dev/null); do
-            echo "Found ISO: $iso"
-            if [[ "$iso" == *"arm64"* ]] || [[ "$iso" == *"aarch64"* ]]; then
-              echo "Moving ARM64 ISO $iso to artifacts folder"
-              sudo cp "$iso" "completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64-$(basename $iso)"
-            else
-              # 如果没有明确标注架构，也复制过去并重命名
-              echo "Moving generic ISO $iso to artifacts folder (assuming ARM64)"
-              sudo cp "$iso" "completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64-$(basename $iso)"
-            fi
+          # 复制 ISO 文件到主机
+          for iso in $(sudo docker exec builder.container find /home/rescuezilla -name "*.iso" -type f 2>/dev/null); do
+            echo "Copying $iso from container..."
+            sudo docker cp builder.container:$iso completed-artifacts-arm64/
+          done
+          
+          # 也检查主机上的文件（如果构建在主机上进行）
+          find . -name "*.iso" -type f 2>/dev/null | while read iso; do
+            echo "Found ISO on host: $iso"
+            sudo cp "$iso" "completed-artifacts-arm64/$(basename $iso)"
           done
 
-      - name: List artifacts
+      - name: List artifacts and cleanup
         run: |
           echo "Created artifacts:"
           ls -la completed-artifacts-arm64/ || echo "No artifacts created"
+          
+          # 停止并删除容器
+          sudo docker stop builder.container || true
+          sudo docker rm builder.container || true
 
-      # 只有在有文件的情况下才上传
       - name: Upload ARM64 artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -180,13 +246,14 @@ jobs:
           ls -la
           echo "Makefile exists: $(test -f Makefile && echo 'yes' || echo 'no')"
           if [ -f Makefile ]; then
-            echo "Makefile contents:"
-            head -20 Makefile
+            echo "Makefile targets:"
+            grep "^[a-zA-Z][^:]*:" Makefile | head -10
           fi
-          echo "Available shell scripts:"
-          find . -name "*.sh" -type f
-          echo "Docker status:"
-          sudo docker --version || echo "Docker not available"
-          sudo systemctl status docker || echo "Docker service not running"
-          echo "Available architectures:"
-          sudo docker buildx ls || echo "Buildx not available"
+          echo "Docker containers:"
+          sudo docker ps -a
+          echo "Docker images:"
+          sudo docker images
+          if sudo docker ps -a | grep -q builder.container; then
+            echo "Container logs:"
+            sudo docker logs builder.container | tail -20
+          fi
