@@ -64,31 +64,10 @@ apt-get upgrade --yes
 # modification of initramfs.conf and the reason for the modification.
 sed --in-place s/COMPRESS=gzip/COMPRESS=lz4/g /etc/initramfs-tools/initramfs.conf
 
-# Packages specific to Rescuezilla 32-bit build (currently based Ubuntu 18.04 Bionic)
-# Hardware Enablement (HWE, also called LTS Enablement Stack) [1] [2]
-# https://wiki.ubuntu.com/Kernel/LTSEnablementStack
-# https://ubuntu.com/about/release-cycle
-pkgs_specific_to_ubuntu1804_bionic_32bit=("linux-generic-hwe-18.04"
-                        "xserver-xorg-hwe-18.04"
-                        "xserver-xorg-video-all-hwe-18.04"
-                        "xserver-xorg-video-intel-hwe-18.04"
-                        "xserver-xorg-video-qxl-hwe-18.04"
-                        # Python3.7 as Rescuezilla uses subprocess's "capture_output" parameter
-                        "python3.7"
-                        # Explicitly install dmidecode as it appears to have been pulled in on other distros by a dependency
-                        "dmidecode"
-                        # Add support for crypto volumes mount (luks, bitlocker, crypt)
-                        "libblockdev-crypto2"
-                        "ibus-anthy"
-                        "reiser4progs"
-                        "python3-whichcraft"
-)
+# 修复：为 ARM64 添加特定的包安装
+# 注意：ARM64 需要使用 linux-image-generic 包，而不是 x86_64 的特定包
 
 # Packages specific to Rescuezilla 64-bit build (currently based Ubuntu 20.04 Focal)
-# TODO: Switch to Hardware Enablement (HWE, also called LTS Enablement Stack) [1] [2]
-#       when it is released.
-# https://wiki.ubuntu.com/Kernel/LTSEnablementStack
-# https://ubuntu.com/about/release-cycle
 pkgs_specific_to_ubuntu2004_focal=("linux-generic-hwe-18.04"
                        "xserver-xorg-hwe-18.04"
                        "xserver-xorg-video-all-hwe-18.04"
@@ -138,29 +117,30 @@ pkgs_specific_to_ubuntu2204_jammy=(
                        "python3-whichcraft"
 )
 
+# 修复：为 ARM64 正确配置 oracular 版本的包
 pkgs_specific_to_ubuntu2410_oracular=(
-                       "linux-generic"
+                       "linux-image-generic"  # 改为 linux-image-generic 确保安装 ARM64 内核
                        "xserver-xorg"
                        "xserver-xorg-video-all"
-                       #"xserver-xorg-video-intel"
                        "xserver-xorg-video-qxl"
                        "xserver-xorg-video-mga"
-                        # Packages which may assist users needing to do a GRUB repair (64-bit EFI)
-                       "shim-signed"
-                       #"grub-efi-amd64-signed"
-                       #"grub-efi-amd64-bin"
-                       "grub-efi-arm64-signed"
+                       # ARM64 UEFI 引导包
+                       "grub-efi-arm64"
                        "grub-efi-arm64-bin"
-                       #"grub-efi-ia32-bin"
-                       # Dependency for Rescuezilla Image Explorer
+                       "grub-efi-arm64-signed"
+                       "shim-signed"
+                       # 依赖包
                        "nbdkit"
-                       # Replaces exfat-utils
                        "exfatprogs"
-                       # Add support for crypto volumes mount (luks, bitlocker, crypt)
+                       # 加密卷支持
                        "libblockdev-crypto3"
                        # "Legacy "local authority" (.pkla) backend for polkitd" required so polkit works on Mantic
                        "polkitd-pkla"
                        "ibus-anthy"
+                       # ARM64 特定包
+                       "efibootmgr"
+                       "linux-firmware"
+                       "firmware-linux"
 )
 
 pkgs_specific_to_ubuntu2404_noble=(
@@ -234,8 +214,6 @@ do
 done
 
 # Packages common to both  32-bit and 64-bit build
-# TODO: Documentation each package with why these particular packages are present,
-# TODO: and what they do.
 common_pkgs=("discover"
              "laptop-detect"
              "casper"
@@ -249,11 +227,6 @@ common_pkgs=("discover"
              "plymouth-x11"
              "plymouth-label"
              "pcmanfm"
-             # PCManFM recommended packages to resolve paths like eg, smb://fileserver/johnsmith
-             # TODO: Re-enable GVFS packages -- seems to cause issues around preventing refreshing partition
-             # tables due to  busy disks. See Rescuezilla launch script for more information.
-             #"gvfs-backends"
-             #"gvfs-fuse"
              "firefox"
              "${firefox_locale_pkgs[@]}"
               # Japanese font
@@ -360,10 +333,27 @@ else
   exit 1
 fi
 
+# 修复：为 ARM64 添加特定的引导修复
+if [ "$ARCH" == "arm64" ]; then
+    echo "安装 ARM64 特定包..."
+    # 确保安装 ARM64 的引导包
+    apt-get install --yes --no-install-recommends grub-efi-arm64 grub-efi-arm64-bin grub-efi-arm64-signed
+fi
+
 apt-get install --yes --no-install-recommends "${apt_pkg_list[@]}"
 if [[ $? -ne 0 ]]; then
     echo "Error: Failed to install packages."
     exit 1
+fi
+
+# 修复：验证 ARM64 内核是否已安装
+if [ "$ARCH" == "arm64" ]; then
+    echo "验证 ARM64 内核安装..."
+    if ! dpkg -l | grep -q "linux-image-.*-generic"; then
+        echo "错误：未安装 ARM64 内核。尝试安装 linux-image-generic..."
+        apt-get install --yes linux-image-generic
+        update-initramfs -u
+    fi
 fi
 
 if  [ "$CODENAME" == "bionic" ]; then
