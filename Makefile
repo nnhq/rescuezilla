@@ -1,4 +1,4 @@
-.DEFAULT_GOAL := oracular
+.DEFAULT_GOAL := noble
 .PHONY: all focal lunar jammy oracular noble bionic-i386 deb sfdisk.v2.20.1.arm64 partclone.restore.v0.2.43.arm64 partclone-latest partclone-utils partclone-nbd install test integration-test clean-build-dir clean clean-all
 
 # FIXME: Properly specify the build artifacts to allow the GNU make to actually be smart about what gets built and when.
