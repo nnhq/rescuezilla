@@ -317,7 +317,18 @@ umount -lf chroot/dev/
 rm chroot/root/.bash_history
 rm chroot/chroot-steps-part-1.sh chroot/chroot-steps-part-2.sh
 
+# 修复：验证 ARM64 内核文件是否存在
 mkdir -p image/casper image/memtest
+
+# 检查内核文件
+echo "检查 ARM64 内核文件..."
+if ! ls chroot/boot/vmlinuz-*-generic 2>/dev/null | grep -q vmlinuz; then
+    echo "错误：未找到 ARM64 内核。尝试在 chroot 中查找..."
+    chroot chroot/ /bin/bash -c "find /boot -name 'vmlinuz*' -type f"
+    echo "请确保在 chroot 中安装了 linux-image-generic 包。"
+    exit 1
+fi
+
 cp chroot/boot/vmlinuz-*-generic image/casper/vmlinuz
 if [[ $? -ne 0 ]]; then
     echo "Error: Failed to copy vmlinuz image."
@@ -325,6 +336,13 @@ if [[ $? -ne 0 ]]; then
 fi
 # Ensures compressed Linux kernel image is readable during the MD5 checksum at boot
 chmod 644 image/casper/vmlinuz
+
+# 检查 initrd 文件
+if ! ls chroot/boot/initrd.img-*-generic 2>/dev/null | grep -q initrd.img; then
+    echo "错误：未找到 ARM64 initrd。尝试在 chroot 中查找..."
+    chroot chroot/ /bin/bash -c "find /boot -name 'initrd*' -type f"
+    exit 1
+fi
 
 cp chroot/boot/initrd.img-*-generic image/casper/initrd.lz
 if [[ $? -ne 0 ]]; then
@@ -388,107 +406,152 @@ mksquashfs chroot image/casper/filesystem.squashfs -comp zstd -b 1M -Xcompressio
 printf $(sudo du -sx --block-size=1 chroot | cut -f1) > image/casper/filesystem.size
 cd image
 
-# Create EFI directory structure for ARM64
-# Modified for ARM64 - Using ARM64-specific files
-# Modify this section in the build script where ARM64 EFI setup is happening
+# 修复：ARM64 EFI 引导配置 - 从 chroot 中复制文件，而不是从 host
 if [ "$ARCH" == "arm64" ]; then
+    echo "设置 ARM64 UEFI 引导..."
     mkdir --parents "$BUILD_DIRECTORY/image/EFI/BOOT/"
     
-    # Check multiple possible locations for ARM64 UEFI bootloader files
-    POSSIBLE_GRUB_LOCATIONS=(
-        "/usr/lib/grub/arm64-efi/grubaa64.efi"
-        "/usr/share/grub/arm64-efi/grubaa64.efi"
-        "/usr/lib/grub-efi-arm64/grubaa64.efi"
-        "/boot/efi/EFI/ubuntu/grubaa64.efi"
-        "/usr/lib/grub-efi-arm64-signed/grubaa64.efi.signed"
+    # 从 chroot 中查找 ARM64 UEFI 引导文件
+    echo "在 chroot 中查找 ARM64 UEFI 引导文件..."
+    
+    # 检查 chroot 中的常见位置
+    CHROOT_GRUB_PATHS=(
+        "$BUILD_DIRECTORY/chroot/usr/lib/grub/arm64-efi/grubaa64.efi"
+        "$BUILD_DIRECTORY/chroot/usr/share/grub/arm64-efi/grubaa64.efi"
+        "$BUILD_DIRECTORY/chroot/usr/lib/grub-efi-arm64/grubaa64.efi"
+        "$BUILD_DIRECTORY/chroot/usr/lib/grub-efi-arm64-signed/grubaa64.efi.signed"
+        "$BUILD_DIRECTORY/chroot/boot/grub/arm64-efi/grubaa64.efi"
     )
     
     FOUND_BOOTLOADER=false
-    for location in "${POSSIBLE_GRUB_LOCATIONS[@]}"; do
+    for location in "${CHROOT_GRUB_PATHS[@]}"; do
         if [ -f "$location" ]; then
-            echo "Found ARM64 UEFI bootloader at $location"
+            echo "从 chroot 中找到 ARM64 UEFI 引导程序: $location"
             cp "$location" "$BUILD_DIRECTORY/image/EFI/BOOT/BOOTAA64.EFI"
             FOUND_BOOTLOADER=true
             break
         fi
     done
     
-    # If not found in standard locations, try to generate it
+    # 如果没找到，尝试在 chroot 中生成
     if [ "$FOUND_BOOTLOADER" = false ]; then
-        echo "No pre-built ARM64 UEFI bootloader found. Attempting to install and generate one..."
-        apt-get update && apt-get install -y grub-efi-arm64 grub-efi-arm64-bin
+        echo "在 chroot 中未找到预编译的 ARM64 UEFI 引导程序。尝试生成..."
+        # 在 chroot 中生成 grubaa64.efi
+        chroot "$BUILD_DIRECTORY/chroot" /bin/bash -c "
+            if command -v grub-mkimage > /dev/null; then
+                echo '在 chroot 中使用 grub-mkimage 生成 ARM64 UEFI 引导程序...'
+                grub-mkimage --directory=/usr/lib/grub/arm64-efi \
+                    --prefix=/boot/grub \
+                    --output=/tmp/grubaa64.efi \
+                    --format=arm64-efi \
+                    --compression=auto \
+                    part_gpt part_msdos fat ext2 normal boot linux configfile loopback chain efifwsetup efi_gop \
+                    efi_uga ls search search_label search_fs_uuid search_fs_file gfxterm gfxterm_background \
+                    gfxterm_menu test all_video loadenv exfat ntfs btrfs hfsplus iso9660 udf
+                echo 'ARM64 UEFI 引导程序生成成功'
+            else
+                echo '错误: chroot 中没有 grub-mkimage 命令'
+                exit 1
+            fi
+        "
         
-        # Try to generate the bootloader
-        if command -v grub-mkimage > /dev/null; then
-            echo "Generating ARM64 UEFI bootloader with grub-mkimage..."
-            grub-mkimage --directory=/usr/lib/grub/arm64-efi \
-                --prefix=/boot/grub \
-                --output="$BUILD_DIRECTORY/image/EFI/BOOT/BOOTAA64.EFI" \
-                --format=arm64-efi \
-                --compression=auto \
-                part_gpt part_msdos fat ext2 normal boot linux configfile loopback chain efifwsetup efi_gop \
-                efi_uga ls search search_label search_fs_uuid search_fs_file gfxterm gfxterm_background \
-                gfxterm_menu test all_video loadenv exfat ntfs btrfs hfsplus iso9660 udf
-                
+        if [ -f "$BUILD_DIRECTORY/chroot/tmp/grubaa64.efi" ]; then
+            cp "$BUILD_DIRECTORY/chroot/tmp/grubaa64.efi" "$BUILD_DIRECTORY/image/EFI/BOOT/BOOTAA64.EFI"
             FOUND_BOOTLOADER=true
+            echo "已从 chroot 复制生成的 ARM64 UEFI 引导程序"
         fi
     fi
     
-    # Final check if bootloader was found or generated
+    # 最终检查
     if [ "$FOUND_BOOTLOADER" = false ]; then
-        echo "Error: Failed to find or generate ARM64 UEFI bootloader."
+        echo "错误：无法找到或生成 ARM64 UEFI 引导程序。"
+        echo "请确保在 chroot 中安装了以下包："
+        echo "  apt-get install grub-efi-arm64 grub-efi-arm64-bin grub-efi-arm64-signed"
         exit 1
     fi
     
-    # Similar approach for GRUB modules
-    if [ -d "/usr/lib/grub/arm64-efi" ]; then
+    echo "ARM64 UEFI 引导程序已复制到: $BUILD_DIRECTORY/image/EFI/BOOT/BOOTAA64.EFI"
+    
+    # 复制 GRUB 模块
+    if [ -d "$BUILD_DIRECTORY/chroot/usr/lib/grub/arm64-efi" ]; then
         mkdir -p "$BUILD_DIRECTORY/image/boot/grub/arm64-efi"
-        cp -r /usr/lib/grub/arm64-efi/* "$BUILD_DIRECTORY/image/boot/grub/arm64-efi/"
-    elif [ -d "/usr/lib/grub-efi-arm64" ]; then
+        cp -r "$BUILD_DIRECTORY/chroot/usr/lib/grub/arm64-efi/"* "$BUILD_DIRECTORY/image/boot/grub/arm64-efi/"
+        echo "已复制 ARM64 GRUB 模块"
+    elif [ -d "$BUILD_DIRECTORY/chroot/usr/lib/grub-efi-arm64" ]; then
         mkdir -p "$BUILD_DIRECTORY/image/boot/grub/arm64-efi"
-        cp -r /usr/lib/grub-efi-arm64/* "$BUILD_DIRECTORY/image/boot/grub/arm64-efi/"
+        cp -r "$BUILD_DIRECTORY/chroot/usr/lib/grub-efi-arm64/"* "$BUILD_DIRECTORY/image/boot/grub/arm64-efi/"
+        echo "已复制 ARM64 GRUB 模块 (替代路径)"
     else
-        echo "Warning: Could not find ARM64 GRUB modules. Creating minimal directory structure."
+        echo "警告：在 chroot 中未找到 ARM64 GRUB 模块。"
         mkdir -p "$BUILD_DIRECTORY/image/boot/grub/arm64-efi"
     fi
     
-    # Create GRUB font directory and copy unicode font
+    # 创建 GRUB 字体目录并复制字体
     mkdir -p "$BUILD_DIRECTORY/image/boot/grub/fonts"
-    if [ -f "/usr/share/grub/unicode.pf2" ]; then
-        cp /usr/share/grub/unicode.pf2 "$BUILD_DIRECTORY/image/boot/grub/fonts"
+    if [ -f "$BUILD_DIRECTORY/chroot/usr/share/grub/unicode.pf2" ]; then
+        cp "$BUILD_DIRECTORY/chroot/usr/share/grub/unicode.pf2" "$BUILD_DIRECTORY/image/boot/grub/fonts/"
+        echo "已复制 GRUB 字体"
     else
-        echo "Warning: Unicode font not found. Trying to generate it..."
-        if command -v grub-mkfont > /dev/null; then
-            apt-get install -y fonts-dejavu
-            grub-mkfont --output="$BUILD_DIRECTORY/image/boot/grub/fonts/unicode.pf2" \
-                        --size=16 /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-        fi
+        echo "警告：在 chroot 中未找到 unicode.pf2 字体文件。"
     fi
     
-    #     
-    # Create ESP image for ARM64
+    # 创建 ARM64 的 GRUB 配置文件
+    echo "创建 ARM64 GRUB 配置文件..."
+    mkdir -p "$BUILD_DIRECTORY/image/boot/grub"
+    cat > "$BUILD_DIRECTORY/image/boot/grub/grub.cfg" << 'EOF'
+set default="0"
+set timeout=5
+
+menuentry "Rescuezilla (ARM64)" {
+    linux /casper/vmlinuz boot=casper quiet splash noprompt noeject ---
+    initrd /casper/initrd.lz
+}
+
+menuentry "Rescuezilla (ARM64) - Safe Graphics Mode" {
+    linux /casper/vmlinuz boot=casper nomodeset quiet splash noprompt noeject ---
+    initrd /casper/initrd.lz
+}
+
+menuentry "Rescuezilla (ARM64) - Text Mode" {
+    linux /casper/vmlinuz boot=casper textonly noprompt noeject ---
+    initrd /casper/initrd.lz
+}
+
+menuentry "Boot from first hard disk" {
+    exit
+}
+EOF
+    echo "ARM64 GRUB 配置文件已创建"
+    
+    # 创建 ESP 镜像
+    echo "创建 ARM64 ESP 镜像..."
     ESP_FAT_IMAGE="$BUILD_DIRECTORY/image/boot/esp.img"
     rm -f "$ESP_FAT_IMAGE"
-    dd if=/dev/zero of="$ESP_FAT_IMAGE" count=6 bs=1M
+    dd if=/dev/zero of="$ESP_FAT_IMAGE" bs=1M count=10
     if [[ $? -ne 0 ]]; then
-        echo "Error: Failed to create blank file for EFI System Partition."
+        echo "错误：无法创建 ESP 空白文件。"
         exit 1
     fi
     
-    mkfs.msdos "$ESP_FAT_IMAGE"
+    mkfs.fat -F 32 "$ESP_FAT_IMAGE"
     if [[ $? -ne 0 ]]; then
-        echo "Error: Failed to create MSDOS filesystem for EFI System Partition (ESP)."
+        echo "错误：无法创建 FAT32 文件系统。"
         exit 1
     fi
     
-    # Pack EFI directory into ESP image
-    mcopy -s -i "$ESP_FAT_IMAGE" "$BUILD_DIRECTORY/image/EFI" ::
+    # 将 EFI 目录复制到 ESP 镜像中
+    mmd -i "$ESP_FAT_IMAGE" ::/EFI
+    mmd -i "$ESP_FAT_IMAGE" ::/EFI/BOOT
+    mcopy -i "$ESP_FAT_IMAGE" "$BUILD_DIRECTORY/image/EFI/BOOT/BOOTAA64.EFI" ::/EFI/BOOT/
     if [[ $? -ne 0 ]]; then
-        echo "Error: Failed to pack EFI System Partition directory structure into FAT filesystem."
+        echo "错误：无法复制 EFI 引导程序到 ESP 镜像。"
         exit 1
     fi
+    
+    echo "ARM64 ESP 镜像创建成功: $ESP_FAT_IMAGE"
+    
 else
-    # Original x86 code (will not be executed for ARM64)
+    # 原始 x86 代码 (ARM64 不会执行此部分)
     mkdir --parents "$BUILD_DIRECTORY/image/EFI/BOOT/"
     cp /usr/lib/shim/shimx64.efi.signed "$BUILD_DIRECTORY/image/EFI/BOOT/BOOTx64.EFI"
     cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed "$BUILD_DIRECTORY/image/EFI/BOOT/grubx64.efi"
@@ -529,8 +592,9 @@ fi
 # Generate md5sum for files in the image
 find . -type f -print0 | xargs -0 md5sum | grep -v "./md5sum.txt" > md5sum.txt
 
-# Create ISO image for ARM64 (simplified method without El Torito boot)
+# Create ISO image for ARM64
 if [ "$ARCH" == "arm64" ]; then
+    echo "创建 ARM64 ISO 镜像..."
     xorrisofs_args=(
         # Output image path
         --output "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME"
@@ -543,15 +607,31 @@ if [ "$ARCH" == "arm64" ]; then
         # Allow up to 31 characters in ISO file names
         -full-iso9660-filenames
         # For ARM64, use simpler EFI boot method
-        --efi-boot "boot/esp.img"
-        # Expose ESP image in GPT
-        -efi-boot-part --efi-boot-image
+        -e boot/esp.img
+        -no-emul-boot
+        --efi-boot boot/esp.img
+        --efi-boot-part
         # Use contents of the specified directory as the ISO filesystem root
         "$BUILD_DIRECTORY/image/"
     )
     
     # Create ISO image for ARM64
     xorrisofs "${xorrisofs_args[@]}"
+    if [[ $? -ne 0 ]]; then
+        echo "错误：创建 ARM64 ISO 镜像失败。"
+        exit 1
+    fi
+    
+    echo "ARM64 ISO 镜像创建成功: $BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME"
+    
+    # 验证 ISO 文件
+    if [ -f "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME" ]; then
+        echo "ISO 文件大小: $(ls -lh "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME" | awk '{print $5}')"
+        echo "ISO 创建完成。"
+    else
+        echo "错误：ISO 文件未创建。"
+        exit 1
+    fi
 else
     # Original x86 ISO creation code
     xorrisofs_args=(
@@ -591,6 +671,8 @@ fi
 
 cd "$BUILD_DIRECTORY"
 mv "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME" ../
+
+echo "构建完成！ISO 文件位于: ../$RESCUEZILLA_ISO_FILENAME"
 
 # TODO: Evaluate the "Errata" sections of the Redo Backup and Recovery
 # TODO: Sourceforge Wiki, and determine if the build scripts need modification.
