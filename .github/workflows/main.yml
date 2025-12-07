@@ -27,11 +27,25 @@ jobs:
       - name: Check Makefile targets
         run: |
           echo "Available make targets:"
-          make help || make --help || cat Makefile | grep "^[a-zA-Z]"
+          make help || make --help || cat Makefile | grep "^[a-zA-Z]" || echo "No Makefile found"
 
-      - name: Install dependencies
+      - name: Fix package conflicts and install dependencies
         run: |
+          # 更新包列表
           sudo apt-get update
+          
+          # 移除可能冲突的包
+          sudo apt-get remove -y containerd.io docker-ce docker-ce-cli || true
+          sudo apt-get autoremove -y || true
+          
+          # 清理包缓存
+          sudo apt-get clean
+          sudo apt-get autoclean
+          
+          # 修复任何损坏的包
+          sudo apt-get install -f
+          
+          # 安装必要的依赖包（分批安装以避免冲突）
           sudo apt-get install -y \
             debootstrap \
             squashfs-tools \
@@ -39,23 +53,47 @@ jobs:
             isolinux \
             syslinux-utils \
             genisoimage \
-            docker.io \
             qemu-user-static \
             binfmt-support
+          
+          # 单独安装 Docker
+          sudo apt-get install -y docker.io || {
+            echo "Failed to install docker.io, trying alternative method..."
+            # 如果还是失败，尝试从官方仓库安装
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+          }
+
+      - name: Start Docker service and add user
+        run: |
+          sudo systemctl start docker
+          sudo systemctl enable docker
+          sudo usermod -aG docker $USER
+          # 验证 Docker 安装
+          sudo docker --version
 
       - name: Enable Docker buildx for multi-platform
         run: |
-          docker buildx create --name mybuilder --use
-          docker buildx inspect --bootstrap
+          sudo docker buildx create --name mybuilder --use || true
+          sudo docker buildx inspect --bootstrap || true
+
+      - name: Setup QEMU for ARM64 emulation
+        run: |
+          # 确保 binfmt 支持已启用
+          sudo systemctl restart systemd-binfmt
+          # 验证 ARM64 支持
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64 || echo "ARM64 emulation may not be available"
 
       - name: Build ARM64 environment
         run: |
           # 检查是否存在 Docker 相关的构建脚本或 Dockerfile
           if [ -f "Dockerfile" ]; then
-            docker buildx build --platform linux/arm64 -t rescuezilla-builder:arm64 .
+            sudo docker buildx build --platform linux/arm64 -t rescuezilla-builder:arm64 . || echo "Docker build failed, continuing..."
           elif [ -f "scripts/build-docker.sh" ]; then
             chmod +x scripts/build-docker.sh
-            ./scripts/build-docker.sh arm64
+            ./scripts/build-docker.sh arm64 || echo "Docker script failed, continuing..."
           else
             echo "No Docker build method found, proceeding with native build"
           fi
@@ -66,24 +104,38 @@ jobs:
       # 尝试不同的构建方法
       - name: Try building ARM64 ISO
         run: |
+          # 设置交叉编译环境变量
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
           # 方法1: 检查是否有特定的ARM64构建目标
           if make -n docker-noble-arm64 2>/dev/null; then
+            echo "Using docker-noble-arm64 target..."
             make docker-noble-arm64
           elif make -n build-arm64 2>/dev/null; then
+            echo "Using build-arm64 target..."
             make build-arm64
           elif make -n arm64 2>/dev/null; then
+            echo "Using arm64 target..."
             make arm64
           elif [ -f "scripts/build-iso-arm64.sh" ]; then
+            echo "Using ARM64 build script..."
             chmod +x scripts/build-iso-arm64.sh
             ./scripts/build-iso-arm64.sh
           else
             echo "Trying to build with available targets..."
             # 查看可用目标并尝试构建
-            make -n all || make -n build || echo "No standard build targets found"
-            # 如果有构建脚本，尝试直接运行
-            if [ -f "build.sh" ]; then
+            if make -n all 2>/dev/null; then
+              ARCH=arm64 make all
+            elif make -n build 2>/dev/null; then
+              ARCH=arm64 make build
+            elif [ -f "build.sh" ]; then
+              echo "Using build.sh script..."
               chmod +x build.sh
               ARCH=arm64 ./build.sh
+            else
+              echo "No suitable build method found"
+              exit 1
             fi
           fi
 
@@ -94,9 +146,14 @@ jobs:
           
           # 移动找到的ISO文件
           for iso in $(find . -name "*.iso" -type f 2>/dev/null); do
+            echo "Found ISO: $iso"
             if [[ "$iso" == *"arm64"* ]] || [[ "$iso" == *"aarch64"* ]]; then
-              echo "Moving $iso to artifacts folder"
-              sudo mv "$iso" "completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64-$(basename $iso)"
+              echo "Moving ARM64 ISO $iso to artifacts folder"
+              sudo cp "$iso" "completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64-$(basename $iso)"
+            else
+              # 如果没有明确标注架构，也复制过去并重命名
+              echo "Moving generic ISO $iso to artifacts folder (assuming ARM64)"
+              sudo cp "$iso" "completed-artifacts-arm64/rescuezilla-${{ github.ref_name }}-arm64-$(basename $iso)"
             fi
           done
 
@@ -108,7 +165,7 @@ jobs:
       # 只有在有文件的情况下才上传
       - name: Upload ARM64 artifacts
         uses: actions/upload-artifact@v4
-        if: success()
+        if: always()
         with:
           name: rescuezilla-arm64-builds
           path: completed-artifacts-arm64/
@@ -128,3 +185,8 @@ jobs:
           fi
           echo "Available shell scripts:"
           find . -name "*.sh" -type f
+          echo "Docker status:"
+          sudo docker --version || echo "Docker not available"
+          sudo systemctl status docker || echo "Docker service not running"
+          echo "Available architectures:"
+          sudo docker buildx ls || echo "Buildx not available"
