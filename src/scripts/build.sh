@@ -593,140 +593,74 @@ fi
 find . -type f -print0 | xargs -0 md5sum | grep -v "./md5sum.txt" > md5sum.txt
 
 # 创建 ARM64 ISO 镜像 - 简化版
+# 创建 ARM64 ISO 镜像 - 直接方法
 if [ "$ARCH" == "arm64" ]; then
-    echo "创建 ARM64 ISO 镜像（简化方法）..."
+    echo "创建 ARM64 ISO 镜像（直接方法）..."
     
-    # 确保在 image 目录中
+    # 进入 image 目录
     cd "$BUILD_DIRECTORY/image"
     
-    # 方法1：使用 xorriso 的简单方法
-    xorriso -as mkisofs \
-        -o "../$RESCUEZILLA_ISO_FILENAME" \
-        -V "RESCUEZILLA" \
+    # 创建 ISO（忽略传统引导，只支持 UEFI）
+    xorriso \
+        -as mkisofs \
         -r -J \
+        -o "../$RESCUEZILLA_ISO_FILENAME" \
+        -V 'RESCUEZILLA' \
         -e boot/esp.img \
         -no-emul-boot \
-        -partition_offset 16 \
-        --grub2-mbr "$BUILD_DIRECTORY/image/boot/grub/i386-pc/boot_hybrid.img" \
-        --mbr-force-bootable \
-        -append_partition 2 0xef "$BUILD_DIRECTORY/image/boot/esp.img" \
+        -append_partition 2 0xef boot/esp.img \
         -appended_part_as_gpt \
-        -c boot.cat \
-        -b boot/grub/grub.eltorito.bootstrap.img \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        --grub2-boot-info \
-        -eltorito-alt-boot \
-        -e '--interval:appended_partition_2:::' \
-        -no-emul-boot \
         .
     
-    # 如果方法1失败，尝试方法2
-    if [[ $? -ne 0 ]] || [ ! -f "../$RESCUEZILLA_ISO_FILENAME" ]; then
-        echo "方法1失败，尝试方法2..."
-        
-        # 回到构建目录
-        cd "$BUILD_DIRECTORY"
-        
-        # 方法2：直接使用 mkisofs/genisoimage 风格
-        xorriso \
-            -outdev "../$RESCUEZILLA_ISO_FILENAME" \
-            -map "image" "/" \
-            -volid "RESCUEZILLA" \
-            -boot_image any next \
-            -boot_image isolinux dir=/isolinux \
-            -boot_image isolinux system_area=/usr/lib/ISOLINUX/isohdpfx.bin \
-            -boot_image any partition_table=on \
-            -boot_image any partition_offset=16 \
-            -boot_image any mbr_force_bootable=on \
-            -boot_image any appended_part_as_gpt=on \
-            -boot_image any cat_path=boot.cat \
-            -boot_image grub bin_path=boot/grub/grub.eltorito.bootstrap.img \
-            -boot_image grub grub2_mbr=/usr/lib/grub/i386-pc/boot_hybrid.img \
-            -boot_image any efi_path=boot/esp.img \
-            -boot_image any platform_id=0xef \
-            -boot_image any efi_boot_part=on \
-            -boot_image any efi_boot_image=on \
-            -boot_image any iso_mbr_part_type=0x00 \
-            -boot_image any partition_cyl_align=off \
-            -boot_image any partition_offset=16 \
-            -boot_image any partition_hd_cyl=82 \
-            -boot_image any partition_sec_hd=32 \
-            -boot_image any iso_mbr_part_type=0x00 \
-            -commit
-    fi
-    
-    # 检查 ISO 是否创建成功
-    if [ -f "../$RESCUEZILLA_ISO_FILENAME" ]; then
-        echo "✅ ARM64 ISO 镜像创建成功: ../$RESCUEZILLA_ISO_FILENAME"
-        echo "ISO 文件大小: $(ls -lh "../$RESCUEZILLA_ISO_FILENAME" | awk '{print $5}')"
+    if [ $? -eq 0 ] && [ -f "../$RESCUEZILLA_ISO_FILENAME" ]; then
+        echo "✅ ISO 创建成功"
     else
-        echo "❌ 错误：ISO 文件未创建。"
-        echo "尝试最后的简单方法..."
+        echo "❌ ISO 创建失败，尝试备选方法..."
         
-        # 最后的方法：最简单的方式
-        xorriso -as mkisofs \
-            -o "../$RESCUEZILLA_ISO_FILENAME" \
-            -r -J \
-            -V "RESCUEZILLA" \
-            -c boot.cat \
-            -b boot/grub/grub.eltorito.bootstrap.img \
-            -no-emul-boot \
-            -boot-load-size 4 \
-            -boot-info-table \
-            -eltorito-alt-boot \
-            -e boot/esp.img \
-            -no-emul-boot \
-            .
-        
-        if [ ! -f "../$RESCUEZILLA_ISO_FILENAME" ]; then
-            echo "❌ 所有方法都失败，无法创建 ISO。"
+        # 备选方法：使用 genisoimage（如果可用）
+        if command -v genisoimage > /dev/null; then
+            echo "使用 genisoimage 创建 ISO..."
+            genisoimage \
+                -o "../$RESCUEZILLA_ISO_FILENAME" \
+                -V 'RESCUEZILLA' \
+                -r -J \
+                -e boot/esp.img \
+                -no-emul-boot \
+                -b boot/esp.img \
+                .
+        elif command -v mkisofs > /dev/null; then
+            echo "使用 mkisofs 创建 ISO..."
+            mkisofs \
+                -o "../$RESCUEZILLA_ISO_FILENAME" \
+                -V 'RESCUEZILLA' \
+                -r -J \
+                -e boot/esp.img \
+                -no-emul-boot \
+                -b boot/esp.img \
+                .
+        else
+            echo "错误：没有找到可用的 ISO 创建工具。"
             exit 1
         fi
     fi
     
-    echo "构建完成！ISO 文件位于: ../$RESCUEZILLA_ISO_FILENAME"
+    # 验证 ISO
+    if [ -f "../$RESCUEZILLA_ISO_FILENAME" ]; then
+        echo "ISO 创建成功: ../$RESCUEZILLA_ISO_FILENAME"
+        echo "文件大小: $(ls -lh "../$RESCUEZILLA_ISO_FILENAME" | awk '{print $5}')"
+    else
+        echo "错误：ISO 文件未创建。"
+        exit 1
+    fi
     
-else
-    # Original x86 ISO creation code
-    xorrisofs_args=(
-        --output "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME"
-        --volid "Rescuezilla"
-        -rational-rock
-        -joliet
-        -full-iso9660-filenames
-        --grub2-mbr /usr/lib/grub/i386-pc/boot_hybrid.img
-        -eltorito-boot boot/grub/grub.eltorito.bootstrap.img
-        --grub2-boot-info
-        -no-emul-boot
-        -eltorito-catalog boot/boot.cat
-        -boot-load-size 4
-        -boot-info-table
-        --efi-boot "boot/esp.img"
-        -efi-boot-part --efi-boot-image
-        "$BUILD_DIRECTORY/image/"
-    )
+    cd "$BUILD_DIRECTORY"
+    mv "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME" ../
     
-    # Create ISO image (part 1/4)
-    xorrisofs "${xorrisofs_args[@]}"
-    
-    # Extract from the ISO image the El Torito boot image (part 2/4)
-    TEMP_MOUNT_DIR=$(mktemp --directory --suffix $RESCUEZILLA_ISO_FILENAME.temp.mount.dir)
-    mount "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME" "$TEMP_MOUNT_DIR"
-    cp "$TEMP_MOUNT_DIR/boot/grub/grub.eltorito.bootstrap.img" "$BUILD_DIRECTORY/image/boot/grub/grub.eltorito.bootstrap.img"
-    umount $TEMP_MOUNT_DIR
-    rmdir $TEMP_MOUNT_DIR
-    
-    # Generate an md5sum of all files (part 3/4)
-    find . -type f -print0 | xargs -0 md5sum | grep -v "./md5sum.txt" > md5sum.txt
-    
-    # Create ISO image (part 4/4)
-    xorrisofs "${xorrisofs_args[@]}"
+    echo "构建完成！"
 fi
 
-cd "$BUILD_DIRECTORY"
-mv "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME" ../
+#cd "$BUILD_DIRECTORY"
+#mv "$BUILD_DIRECTORY/$RESCUEZILLA_ISO_FILENAME" ../
 
 echo "构建完成！ISO 文件位于: ../$RESCUEZILLA_ISO_FILENAME"
 
