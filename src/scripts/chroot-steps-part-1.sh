@@ -144,27 +144,30 @@ pkgs_specific_to_ubuntu2410_oracular=(
 )
 
 pkgs_specific_to_ubuntu2404_noble=(
-                       "linux-generic"
-                       "xserver-xorg"
-                       "xserver-xorg-video-all"
-                       "xserver-xorg-video-intel"
-                       "xserver-xorg-video-qxl"
-                       "xserver-xorg-video-mga"
-                        # Packages which may assist users needing to do a GRUB repair (64-bit EFI)
-                       "shim-signed"
-                       "grub-efi-amd64-signed"
-                       "grub-efi-amd64-bin"
-                       "grub-efi-ia32-bin"
-                       # Dependency for Rescuezilla Image Explorer
-                       "nbdkit"
-                       # Replaces exfat-utils
-                       "exfatprogs"
-                       # Add support for crypto volumes mount (luks, bitlocker, crypt)
-                       "libblockdev-crypto3"
-                       # "Legacy "local authority" (.pkla) backend for polkitd" required so polkit works on Mantic
-                       "polkitd-pkla"
-                       "reiser4progs"
-                       "python3-whichcraft"
+    "linux-image-generic"  # ARM64 内核
+    "xserver-xorg"
+    "xserver-xorg-video-all"
+    # "xserver-xorg-video-intel"  # ARM64 可能不需要这个
+    "xserver-xorg-video-qxl"
+    "xserver-xorg-video-mga"
+    # ARM64 UEFI 引导包
+    "grub-efi-arm64"
+    "grub-efi-arm64-bin"
+    "grub-efi-arm64-signed"
+    "shim-signed"
+    # 依赖包
+    "nbdkit"
+    "exfatprogs"
+    # 加密卷支持
+    "libblockdev-crypto3"
+    # polkit 支持
+    "polkitd-pkla"
+    # 文件系统支持
+    "reiser4progs"
+    "python3-whichcraft"
+    # ARM64 特定包
+    "efibootmgr"
+    "linux-firmware"
 )
 
 # Languages on the system
