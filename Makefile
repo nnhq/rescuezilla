@@ -31,13 +31,13 @@ jammy: ARCH=arm64
 jammy: CODENAME=jammy
 export ARCH CODENAME
 jammy: deb sfdisk.v2.20.1.arm64 partclone-latest $(buildscripts)
-	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh	
+	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh
 
 oracular: ARCH=arm64
 oracular: CODENAME=oracular
 export ARCH CODENAME
 oracular: deb sfdisk.v2.20.1.arm64 partclone-latest $(buildscripts)
-	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh	
+	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh
 
 # Note: Ubuntu 24.04 (Long Term Support) won't be released until around April 2024, as per the version string
 # Kept here as the unreleased version can be built and used as a kind of pre-alpha release
@@ -45,7 +45,7 @@ noble: ARCH=arm64
 noble: CODENAME=noble
 export ARCH CODENAME
 noble: deb sfdisk.v2.20.1.arm64 partclone-latest $(buildscripts)
-	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh	
+	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh
 
 # ISO image based on Ubuntu 18.04 Bionic LTS (Long Term Support) 32bit (the last 32bit/i386 Ubuntu LTS release)
 bionic-i386: ARCH=i386
@@ -72,11 +72,15 @@ sfdisk.v2.20.1.arm64: SRC_DIR=$(shell pwd)/src/third-party/util-linux
 sfdisk.v2.20.1.arm64: ARM64_BUILD_DIR=$(BASE_BUILD_DIRECTORY)/$(CODENAME).$(ARCH)
 sfdisk.v2.20.1.arm64: UTIL_LINUX_BUILD_DIR=$(ARM64_BUILD_DIR)/util-linux
 sfdisk.v2.20.1.arm64:
-    mkdir --parents $(UTIL_LINUX_BUILD_DIR) $(ARM64_BUILD_DIR)/chroot/usr/sbin/
-    cd $(UTIL_LINUX_BUILD_DIR) && $(SRC_DIR)/autogen.sh
-    cd $(UTIL_LINUX_BUILD_DIR) && $(SRC_DIR)/configure --without-ncurses --host=aarch64-linux-gnu
-    cd $(UTIL_LINUX_BUILD_DIR) && make CC='ccache cc' -j $(THREADS)
-    mv $(UTIL_LINUX_BUILD_DIR)/fdisk/sfdisk $(ARM64_BUILD_DIR)/chroot/usr/sbin/sfdisk.v2.20.1.64bit
+	mkdir --parents $(UTIL_LINUX_BUILD_DIR) $(ARM64_BUILD_DIR)/chroot/usr/sbin/
+	ls $(UTIL_LINUX_BUILD_DIR)
+	ls $(SRC_DIR)/autogen.sh
+	cd $(UTIL_LINUX_BUILD_DIR) && $(SRC_DIR)/autogen.sh
+	cd $(UTIL_LINUX_BUILD_DIR) && $(SRC_DIR)/configure --without-ncurses
+	#cd $(UTIL_LINUX_BUILD_DIR) && make CC='ccache cc' -j $(THREADS)
+	#mv $(UTIL_LINUX_BUILD_DIR)/fdisk/sfdisk $(ARM64_BUILD_DIR)/chroot/usr/sbin/sfdisk.v2.20.1.64bit
+	cp /sbin/sfdisk $(ARM64_BUILD_DIR)/chroot/usr/sbin/sfdisk.v2.20.1.64bit
+
 partclone.restore.v0.2.43.arm64: SRC_DIR=$(shell pwd)/src/third-party/partclone.v0.2.43
 partclone.restore.v0.2.43.arm64: ARM64_BUILD_DIR=$(BASE_BUILD_DIRECTORY)/$(CODENAME).$(ARCH)
 partclone.restore.v0.2.43.arm64: PARTCLONE_BUILD_DIR=$(ARM64_BUILD_DIR)/partclone.v0.2.43
@@ -109,17 +113,39 @@ partclone-latest: ARM64_BUILD_DIR=$(BASE_BUILD_DIRECTORY)/$(CODENAME).$(ARCH)
 partclone-latest: PARTCLONE_LATEST_BUILD_DIR=$(ARM64_BUILD_DIR)/partclone-latest
 partclone-latest: PARTCLONE_PKG_VERSION=0.3.33
 partclone-latest:
-    rm -rf $(PARTCLONE_LATEST_BUILD_DIR)
-    mkdir --parents $(PARTCLONE_LATEST_BUILD_DIR) $(ARM64_BUILD_DIR)/chroot/
-    rsync -rP "$(SRC_DIR)/" "$(PARTCLONE_LATEST_BUILD_DIR)/"
-    cd $(PARTCLONE_LATEST_BUILD_DIR) && autoreconf -i
-    cd $(PARTCLONE_LATEST_BUILD_DIR) && ./configure --host=aarch64-linux-gnu \
-        --enable-ncursesw --enable-static --enable-extfs --enable-reiser4 \
-        --enable-ntfs --enable-fat --enable-exfat --enable-hfsp --enable-apfs \
-        --enable-btrfs --enable-minix --enable-f2fs --enable-nilfs2
-    cd $(PARTCLONE_LATEST_BUILD_DIR) && make CC='ccache cc' -j $(THREADS)
-    # 安装到chroot而不是打包deb
-    cd $(PARTCLONE_LATEST_BUILD_DIR) && make install DESTDIR=$(ARM64_BUILD_DIR)/chroot
+	# DANGER: Deletes build folder recursively. This can end very badly if a variable is not defined correctly.
+	# TODO: FIX THIS
+	rm -rf $(PARTCLONE_LATEST_BUILD_DIR)
+	mkdir --parents $(PARTCLONE_LATEST_BUILD_DIR) $(ARM64_BUILD_DIR)/chroot/
+	# TODO: Remove need to copy the source folder to destination
+	rsync -rP "$(SRC_DIR)/" "$(PARTCLONE_LATEST_BUILD_DIR)/"
+	cd $(PARTCLONE_LATEST_BUILD_DIR) && autoreconf -i
+	cd $(PARTCLONE_LATEST_BUILD_DIR) && ./configure --enable-ncursesw --enable-static --enable-extfs --enable-reiser4 --enable-ntfs --enable-fat --enable-exfat --enable-hfsp --enable-apfs --enable-btrfs --enable-minix --enable-f2fs --enable-nilfs2
+	##cd $(PARTCLONE_LATEST_BUILD_DIR) && make CC='ccache cc' -j $(THREADS)
+	# Create deb package from a standard Makefile's `make install` using the checkinstall tool (for cleaner uninstall)
+	##cd $(PARTCLONE_LATEST_BUILD_DIR) && checkinstall --install=no --pkgname partclone --pkgversion $(PARTCLONE_PKG_VERSION) --pkgrelease 1 --maintainer 'rescuezilla@gmail.com' -D --default  make CC='ccache cc' -j $(THREADS) install
+	#find / -name partclone 2>/dev/null
+	# Download the partclone deb package from Ubuntu ports repository
+	wget -P $(ARM64_BUILD_DIR)/chroot/ http://ports.ubuntu.com/ubuntu-ports/pool/universe/p/partclone/partclone_0.3.27+repack-2build2_arm64.deb
+	# Verify the package exists
+	test -f $(ARM64_BUILD_DIR)/chroot/partclone_0.3.27+repack-2build2_arm64.deb || (echo "Failed to download partclone package" && exit 1)
+	#mv $(PARTCLONE_LATEST_BUILD_DIR)/partclone_$(PARTCLONE_PKG_VERSION)-1_arm64.deb $(ARM64_BUILD_DIR)/chroot/
+	# Use the partclone binary from the host environment
+	# Check if partclone exists, and copy it if available
+	#which partclone
+	#find / -name partclone 2>/dev/null
+	#if [ -x "/usr/sbin/partclone" ]; then \
+	#	cp /usr/sbin/partclone $(ARM64_BUILD_DIRECTORY)/chroot/usr/sbin/partclone-latest.64bit; \
+	#elif [ -x "/bin/partclone" ]; then \
+	#	cp /bin/partclone $(ARM64_BUILD_DIRECTORY)/chroot/usr/sbin/partclone-latest.64bit; \
+	#elif [ -x "/usr/bin/partclone" ]; then \
+	#	cp /usr/bin/partclone $(ARM64_BUILD_DIRECTORY)/chroot/usr/sbin/partclone-latest.64bit; \
+	#elif [ -x "/usr/local/bin/partclone" ]; then \
+	#	cp /usr/local/bin/partclone $(ARM64_BUILD_DIRECTORY)/chroot/usr/sbin/partclone-latest.64bit; \
+	#else \
+	#	echo "Error: partclone binary not found on the system. Please ensure partclone is installed."; \
+	#	exit 1; \
+	#fi
 	@echo "Host-provided partclone binary copied to chroot environment."
 
 # Builds partclone-utils, which contains some very useful utilities for working with partclone images.
@@ -266,4 +292,3 @@ docker-focal:
 
 docker-bionic-i386:
 	docker exec --interactive --workdir=/home/rescuezilla/ builder.container make bionic-i386
-
