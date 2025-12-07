@@ -76,27 +76,31 @@ jobs:
         lsb_release -a
         gcc --version
         
-        # 构建 ARM64 ISO 镜像
-        sudo make oracular 2>&1
+        # 使用 noble (Ubuntu 24.04 LTS) 版本构建
+        echo "=== 构建 ARM64 ISO 镜像 (noble) ==="
+        sudo make noble 2>&1
         
     - name: Check build output
       run: |
         echo "=== 检查构建输出 ==="
         ls -la build/ || true
         
-        if [ -f build/rescuezilla.arm64.oracular.iso ]; then
+        # 使用 noble 版本的 ISO 文件名
+        if [ -f build/rescuezilla.arm64.noble.iso ]; then
           echo "✅ ISO 文件创建成功"
-          echo "ISO 文件大小: $(ls -lh build/rescuezilla.arm64.oracular.iso | awk '{print $5}')"
+          echo "ISO 文件大小: $(ls -lh build/rescuezilla.arm64.noble.iso | awk '{print $5}')"
           
           # 尝试检查 ISO 内容
           if command -v isoinfo > /dev/null; then
             echo "=== ISO 文件信息 ==="
-            isoinfo -d -i build/rescuezilla.arm64.oracular.iso 2>/dev/null || true
+            isoinfo -d -i build/rescuezilla.arm64.noble.iso 2>/dev/null || true
           fi
         else
           echo "❌ ISO 文件未生成"
+          echo "寻找可能的 ISO 文件:"
+          find build/ -name "*.iso" -type f 2>/dev/null || true
           # 尝试查找可能的错误日志
-          find build/ -name "*.log" -o -name "*.txt" | xargs cat 2>/dev/null | head -100 || true
+          find build/ -name "*.log" -o -name "*.txt" 2>/dev/null | xargs cat 2>/dev/null | head -100 || true
           exit 1
         fi
 
@@ -104,11 +108,11 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: rescuezilla-arm64.iso
-        path: build/rescuezilla.arm64.oracular.iso
+        path: build/rescuezilla.arm64.noble.iso
        
     - name: Upload release assets (on tag push)
       uses: softprops/action-gh-release@v1
       if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
       with:
         files: |
-          build/rescuezilla.arm64.oracular.iso
+          build/rescuezilla.arm64.noble.iso
