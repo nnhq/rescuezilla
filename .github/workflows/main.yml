@@ -110,9 +110,15 @@ jobs:
         name: rescuezilla-arm64.iso
         path: build/rescuezilla.arm64.noble.iso
        
-    - name: Upload release assets (on tag push)
-      uses: softprops/action-gh-release@v1
+    - name: Create Release and Upload Asset
       if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+      uses: ncipollo/release-action@v1
       with:
-        files: |
-          build/rescuezilla.arm64.noble.iso
+        tag: "${{ github.ref_name }}"
+        name: "Release ${{ github.ref_name }}"
+        body: |
+          Rescuezilla ARM64 ISO
+          Build from commit: ${{ github.sha }}
+        prerelease: false
+        artifacts: "build/rescuezilla.arm64.noble.iso"
+        token: ${{ secrets.GITHUB_TOKEN }}
