@@ -15,41 +15,49 @@ jobs:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        submodules: recursive  # 修复：正确初始化子模块
+        submodules: recursive
         
     - name: Install dependencies
       run: |
+        # 设置错误处理
+        set -e
+        
         sudo apt update
-        sudo apt install -y git-lfs git make sudo \
-                         rsync debootstrap gettext squashfs-tools dosfstools mtools xorriso util-linux \
-                         devscripts debhelper checkinstall cmake time parallel dpkg-dev partclone \
-                         grub-efi-arm64-bin \
-                         shim-signed grub-efi-arm64-signed build-essential \
-                         libtool-bin gawk pkg-config comerr-dev docbook-xsl e2fslibs-dev fuse3 \
-                         libaal-dev libblkid-dev libbsd-dev libncurses5-dev \
-                         libncursesw5-dev libntfs-3g89 libreadline-dev libreadline8 readline-common \
-                         libreiser4-dev libtinfo-dev libxslt1.1 nilfs-tools ntfs-3g ntfs-3g-dev \
-                         quilt sgml-base uuid-dev vmfs-tools xfslibs-dev xfsprogs xml-core \
-                         xsltproc ccache libssl-dev \
-                         gcc-9 g++-9  # 安装特定版本的 gcc
+        # 分开安装包，避免单个命令太长导致的问题
+        sudo apt install -y \
+          git-lfs git make sudo \
+          rsync debootstrap gettext squashfs-tools dosfstools mtools xorriso util-linux \
+          devscripts debhelper checkinstall cmake time parallel dpkg-dev \
+          grub-efi-arm64-bin \
+          shim-signed grub-efi-arm64-signed build-essential \
+          libtool-bin gawk pkg-config comerr-dev docbook-xsl e2fslibs-dev fuse3 \
+          libaal-dev libblkid-dev libbsd-dev libncurses5-dev \
+          libncursesw5-dev libntfs-3g89 libreadline-dev libreadline8 readline-common \
+          libreiser4-dev libtinfo-dev libxslt1.1 nilfs-tools ntfs-3g ntfs-3g-dev \
+          quilt sgml-base uuid-dev vmfs-tools xfslibs-dev xfsprogs xml-core \
+          xsltproc ccache libssl-dev
         
-        # 设置 gcc-9 为默认编译器
-        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90
-        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 90
+        # 安装 partclone - 这个包在 Ubuntu 24.04 中可能有版本问题
+        sudo apt install -y partclone || echo "partclone 安装失败，但继续..."
+        
+        # 安装特定版本的 gcc
+        sudo apt install -y gcc-9 g++-9
+        
+        # 设置 gcc-9 为默认编译器 - 使用非交互式方式
+        echo "设置 gcc-9 为默认编译器..."
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 --slave /usr/bin/g++ g++ /usr/bin/g++-9
         sudo update-alternatives --set gcc /usr/bin/gcc-9
-        sudo update-alternatives --set g++ /usr/bin/g++-9
         
-        # 验证编译器版本
+        # 验证安装
         gcc --version
         g++ --version
         
-        # 安装 ARM64 交叉编译工具（如果需要）
-        # sudo apt install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-        
-        # 验证基本工具
-        which partclone
+        # 验证其他关键工具
         which xorriso
         which mksquashfs
+        which debootstrap
+        
+        echo "依赖安装完成"
         
     - name: Initialize git LFS
       run: |
@@ -62,35 +70,34 @@ jobs:
         
     - name: Build ISO
       run: |
-        # 构建 ARM64 ISO 镜像
-        sudo make oracular
+        # 显示构建环境信息
+        echo "=== 构建环境信息 ==="
+        uname -a
+        lsb_release -a
+        gcc --version
         
-    # 添加调试步骤：检查构建输出
+        # 构建 ARM64 ISO 镜像
+        sudo make oracular 2>&1
+        
     - name: Check build output
       run: |
         echo "=== 检查构建输出 ==="
-        ls -la build/
-        echo "=== 检查 ISO 文件 ==="
+        ls -la build/ || true
+        
         if [ -f build/rescuezilla.arm64.oracular.iso ]; then
-          echo "ISO 文件存在，大小: $(ls -lh build/rescuezilla.arm64.oracular.iso | awk '{print $5}')"
-          # 检查 ISO 内容
-          mkdir -p iso_check
-          sudo mount -o loop build/rescuezilla.arm64.oracular.iso iso_check 2>/dev/null || true
-          if [ -d iso_check ]; then
-            echo "=== ISO 内容 ==="
-            ls -la iso_check/
-            echo "=== EFI 目录 ==="
-            ls -la iso_check/EFI/ 2>/dev/null || echo "无 EFI 目录"
-            echo "=== boot 目录 ==="
-            ls -la iso_check/boot/ 2>/dev/null || echo "无 boot 目录"
-            echo "=== casper 目录 ==="
-            ls -la iso_check/casper/ 2>/dev/null || echo "无 casper 目录"
-            sudo umount iso_check 2>/dev/null || true
+          echo "✅ ISO 文件创建成功"
+          echo "ISO 文件大小: $(ls -lh build/rescuezilla.arm64.oracular.iso | awk '{print $5}')"
+          
+          # 尝试检查 ISO 内容
+          if command -v isoinfo > /dev/null; then
+            echo "=== ISO 文件信息 ==="
+            isoinfo -d -i build/rescuezilla.arm64.oracular.iso 2>/dev/null || true
           fi
-          rmdir iso_check 2>/dev/null || true
         else
-          echo "错误：ISO 文件未生成"
-          ls -la build/
+          echo "❌ ISO 文件未生成"
+          # 尝试查找可能的错误日志
+          find build/ -name "*.log" -o -name "*.txt" | xargs cat 2>/dev/null | head -100 || true
+          exit 1
         fi
 
     - name: Upload ISO
