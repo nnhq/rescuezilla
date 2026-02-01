@@ -76,12 +76,15 @@ export ARCH
 partclone-nbd-arm64:
 	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) src/third-party/partclone-nbd/build.sh
 
-# Docker targets for ARM64
+# Docker targets for ARM64 - Build on native architecture (x86_64 in GitHub Actions)
 docker-build-arm64:
-	docker build --platform linux/arm64 -f Dockerfile.dev -t rescuezilla-build-arm64 .
+	@echo "Building Docker image rescuezilla-build-arm64..."
+	docker build -f Dockerfile.dev -t rescuezilla-build-arm64:latest .
+	@echo "Docker image built successfully"
 
 docker-run-arm64:
-	docker run --platform linux/arm64 --rm -d --name rescuezilla-build-arm64 --privileged -v $(PWD):/rescuezilla rescuezilla-build-arm64
+	@echo "Starting Docker container rescuezilla-build-arm64..."
+	docker run --rm -d --name rescuezilla-build-arm64 --privileged -v $(PWD):/rescuezilla rescuezilla-build-arm64:latest
 
 docker-add-safe-directory:
 	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && git config --global --add safe.directory /rescuezilla"
@@ -129,5 +132,5 @@ clean: clean-build-dir
 
 clean-all: clean
 	rm -rf $(BASE_BUILD_DIRECTORY)/ 
-	docker stop rescuezilla-build-arm64 || true
-	docker rm rescuezilla-build-arm64 || true
+	docker stop rescuezilla-build-arm64 2>/dev/null || true
+	docker rm rescuezilla-build-arm64 2>/dev/null || true
