@@ -1,102 +1,118 @@
 #!/bin/bash
+#
+# Chroot Setup Script - Part 2  
+# Configures the system for ARM64 Rescuezilla
+#
+# Copyright (C) 2019-2024 Rescuezilla Contributors
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 
 set -x
+# Exit on any error
+set -e
 
-# Non-interactive apt operations
-DEBIAN_FRONTEND=noninteractive
+echo "Starting chroot setup part 2 for ARM64..."
 
-cd /
+# Create live user
+adduser --disabled-password --gecos "Live User" live
+echo "live:live" | chpasswd
+usermod -aG sudo live
 
-# Install other rescuezilla frontend and all dependencies.
-# gdebi installs deb files and resolves dependencies from the apt repositories.
-gdebi --non-interactive /rescuezilla*deb
-if [[ $? -ne 0 ]]; then
-  echo "Error: Failed to install Rescuezilla deb packages."
-  exit 1
-fi
-rm /rescuezilla.*deb
-# HACK(Ref:#367): Backup Ubuntu repository's "partclone.xfs"
-echo "Making backup of Ubuntu repository partclone.xfs binary before installing newer partclone. See #367"
-cp -r /usr/sbin/partclone.xfs /
-
-# Install other rescuezilla packages and all dependencies.
-DEB_PACKAGES=/*.deb
-for f in $DEB_PACKAGES
-do
-  # gdebi installs deb files and resolves dependencies from the apt repositories.
-  gdebi --non-interactive $f
-  if [[ $? -ne 0 ]]; then
-    echo "Error: Failed to install Rescuezilla deb packages."
-    exit 1
-  fi
-  dpkg -c $f
-done
-
-# Extra validation for the Image Explorer (beta)'s underlying app, in case
-# something went wrong in its relatively complex build environment.
-if [[ ! -f "/usr/local/bin/partclone-nbd" ]]; then
-    echo "Error: failed to find partclone-nbd binary in expected location"
-fi
-
-# Delete the now-installed deb files from the chroot filesystem
-rm /*.deb
-
-echo "Deploying Ubuntu repository partclone.xfs binary after installing newer partclone. See #367"
-mv /partclone.xfs /usr/sbin/
-
-# Add reasonable xdg-open MIME associations based on Ubuntu user file
-mkdir --parents /root/.local/share/applications/
-rsync -aP /home/ubuntu/.local/share/applications/mimeapps.list /root/.local/share/applications/
-
-# Set the default xdg-open MIME association for root user on folder paths
-# to use PCManFM file manager, rather that baobab (GNOME disks)
-# Required for Image Explorer, as it uses 'xdg-open' on a folder path
-xdg-mime default pcmanfm.desktop inode/directory
-
-update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal
-update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/rescuezilla-logo/rescuezilla-logo.plymouth 100
-update-alternatives --set default.plymouth /usr/share/plymouth/themes/rescuezilla-logo/rescuezilla-logo.plymouth
-
-update-initramfs -u
-
-# Remove unused packages (such as old linux kernels, if present)
-# 
-# From `man apt-get`: autoremove is used to remove packages that were
-# automatically installed to satisfy dependencies for other packages and are
-# now no longer needed.
-sudo apt-get --yes autoremove
-
-rm /var/lib/dbus/machine-id
-rm /sbin/initctl
-dpkg-divert --rename --remove /sbin/initctl
-
-# Move downloaded apt packages and indexes to top-level chroot directory, to be
-# extracted out of chroot and saved for subsequent builds.
-mv /var/cache/apt/archives /var.cache.apt.archives
-mv /var/lib/apt/lists /var.lib.apt.lists
-# From `man apt-get`: "clears out the local repository of retrieved package
-# files. It removes everything but the lock file from /var/cache/apt/archives/
-# and /var/cache/apt/archives/partial/."
-apt-get clean
-
-# Disable systemd's built-in NTP time synchronization service by manually masking it (`systemctl mask`)
-# using a symlink. This timesyncd service always modifies the hardware clock, and there
-# does not appear to be a way to prevent this service from modifying the hardware clock.
-# See [1] for more discussion.
-# [1] https://github.com/rescuezilla/rescuezilla/issues/107
-rm /etc/systemd/system/systemd-timesyncd.service
-ln -s /dev/null /etc/systemd/system/systemd-timesyncd.service
-
-# Replace host system's resolv.conf with Google DNS
-cat << EOF > /etc/resolv.conf
-nameserver 8.8.8.8
-nameserver 8.8.4.4
+# Configure autologin for live session
+mkdir -p /etc/lightdm/lightdm.conf.d/
+cat > /etc/lightdm/lightdm.conf.d/12-autologin.conf <<EOF
+[Seat:*]
+autologin-user=live
+autologin-user-timeout=0
 EOF
 
-rm -rf /tmp/*
-rm -rf /var/lib/apt/lists/????????*
-umount -lf /proc
-umount -lf /sys
-umount -lf /dev/pts
+# Set hostname for ARM64 system
+echo "rescuezilla-arm64" > /etc/hostname
 
-exit 0
+# Update /etc/hosts
+cat > /etc/hosts <<EOF
+127.0.0.1   localhost
+127.0.1.1   rescuezilla-arm64
+
+# The following lines are desirable for IPv6 capable hosts
+::1     localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+EOF
+
+# Configure network interfaces
+cat > /etc/NetworkManager/NetworkManager.conf <<EOF
+[main]
+plugins=ifupdown,keyfile
+dns=dnsmasq
+
+[ifupdown]
+managed=false
+
+[device]
+wifi.scan-rand-mac-address=no
+EOF
+
+# Install Python dependencies for Rescuezilla
+pip3 install --upgrade pip
+pip3 install setuptools wheel
+
+# Create desktop entry for Rescuezilla
+mkdir -p /home/live/Desktop
+cat > /home/live/Desktop/rescuezilla.desktop <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Rescuezilla
+Comment=The Swiss Army Knife of System Recovery
+Exec=python3 /usr/share/rescuezilla/rescuezilla.py
+Icon=/usr/share/rescuezilla/rescuezilla.png
+Terminal=false
+Categories=System;
+EOF
+
+chmod +x /home/live/Desktop/rescuezilla.desktop
+chown live:live /home/live/Desktop/rescuezilla.desktop
+
+# Create autostart entry
+mkdir -p /home/live/.config/autostart
+cp /home/live/Desktop/rescuezilla.desktop /home/live/.config/autostart/
+chown -R live:live /home/live/.config
+
+# Configure GRUB for ARM64 EFI
+echo 'GRUB_DEFAULT=0' >> /etc/default/grub
+echo 'GRUB_TIMEOUT=10' >> /etc/default/grub
+echo 'GRUB_DISTRIBUTOR="Rescuezilla ARM64"' >> /etc/default/grub
+echo 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"' >> /etc/default/grub
+echo 'GRUB_CMDLINE_LINUX=""' >> /etc/default/grub
+
+# Update initramfs for ARM64
+update-initramfs -u
+
+# Set up casper configuration for live boot
+mkdir -p /etc/casper
+echo "export USERNAME=live" > /etc/casper.conf
+echo "export USERFULLNAME=\"Live User\"" >> /etc/casper.conf
+echo "export HOST=rescuezilla-arm64" >> /etc/casper.conf
+
+# Create manifest files
+dpkg-query -W --showformat='${Package} ${Version}\n' > /var/lib/dpkg/info/live-system.list
+
+# Configure systemd for live system
+systemctl enable NetworkManager
+systemctl enable lightdm
+
+# Clean up
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+rm -rf /tmp/*
+rm -rf /var/tmp/*
+
+# Remove machine-id to allow it to be regenerated on first boot
+rm -f /etc/machine-id
+rm -f /var/lib/dbus/machine-id
+
+echo "Chroot setup part 2 completed for ARM64"
