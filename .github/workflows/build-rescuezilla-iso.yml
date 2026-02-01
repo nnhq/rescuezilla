@@ -3,7 +3,7 @@
 on: [push]
 jobs:
   rescuezilla-iso-build:
-    runs-on: ubuntu-latest-arm64  # 使用 ARM64 运行器
+    runs-on: ubuntu-latest-arm  # 使用 ARM64 运行器
     permissions:
       contents: write
     steps:
