@@ -50,28 +50,29 @@ jobs:
             fi
           done
 
-      - name: Verify Submodules
+      - name: Create Git Tags for Version
         run: |
-          echo "Checking submodule status:"
-          git submodule status --recursive
-          echo "Listing submodule directories:"
-          find src/third-party/ -type d -name ".git" | head -10
+          # Create a default tag if none exists
+          if ! git describe --tags --match='[0-9].[0-9]*' --abbrev=0 2>/dev/null; then
+            echo "No version tags found, creating default tag"
+            git tag -a "2.5.1" -m "Default version tag for ARM64 build"
+          fi
 
       # Extract human-readable version string from the most recent CHANGELOG entry
       - name: Extract Version Information
         run: |
-          echo "RESCUEZILLA_RELEASE_NAME=\"$(git grep -h -E -o '[a-zA-Z].*)' CHANGELOG | head -1 || echo 'Development Build')\"" >> $GITHUB_ENV
-          echo "DEB_VERSION=$(git describe --tags --match='[0-9].[0-9]*' --abbrev=0 2>/dev/null || echo '1.0.0'))" >> $GITHUB_ENV
+          echo "RESCUEZILLA_RELEASE_NAME=\"$(git grep -h -E -o '[a-zA-Z].*)' CHANGELOG 2>/dev/null | head -1 || echo 'ARM64 Development Build')\"" >> $GITHUB_ENV
+          echo "DEB_VERSION=$(git describe --tags --match='[0-9].[0-9]*' --abbrev=0 2>/dev/null || echo '2.5.1')" >> $GITHUB_ENV
 
-      - name: Generate release notes (and set default release in notes)
+      - name: Generate release notes
         if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
         run: |
           if [ -f "src/scripts/update/generate-release-notes.sh" ]; then
             cd src/scripts/update
             chmod +x generate-release-notes.sh
-            ./generate-release-notes.sh ${{github.ref_name}} "oracular" > /tmp/release-notes.md || echo "Generated release notes failed, using default"
+            ./generate-release-notes.sh ${{github.ref_name}} "noble" > /tmp/release-notes.md || echo "Generated release notes failed, using default"
           else
-            echo "Release notes for ${{github.ref_name}}" > /tmp/release-notes.md
+            echo "Release notes for ${{github.ref_name}} ARM64" > /tmp/release-notes.md
           fi
           echo "RELEASE_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
 
@@ -96,21 +97,9 @@ jobs:
         run: make docker-test
 
       - run: make docker-status
-      - name: Make Ubuntu 25.04 (Plucky) ARM64 UEFI ISO
-        run: make docker-plucky-arm64-uefi
-      - run: sudo mv build/rescuezilla.arm64.plucky.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.plucky.iso
-      - run: sudo make clean-all
-
-      - run: make docker-status
       - name: Make Ubuntu 24.04 LTS (Noble) ARM64 UEFI ISO
         run: make docker-noble-arm64-uefi
       - run: sudo mv build/rescuezilla.arm64.noble.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.noble.iso
-      - run: sudo make clean-all
-
-      - run: make docker-status
-      - name: Make Ubuntu 24.10 (Oracular) ARM64 UEFI ISO
-        run: make docker-oracular-arm64-uefi
-      - run: sudo mv build/rescuezilla.arm64.oracular.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.oracular.iso
       - run: sudo make clean-all
 
       - run: make docker-status
@@ -173,16 +162,6 @@ jobs:
         with:
           name: rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb
           path: completed-artifacts/rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rescuezilla-${{github.ref_name}}-arm64.plucky.iso
-          path: completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.plucky.iso
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rescuezilla-${{github.ref_name}}-arm64.oracular.iso
-          path: completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.oracular.iso
 
       - uses: actions/upload-artifact@v4
         with:
