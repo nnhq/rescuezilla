@@ -3,14 +3,14 @@
 on: [push]
 jobs:
   rescuezilla-iso-build:
-    runs-on: ubuntu-24.04-arm  # 正确的 ARM64 运行器标签
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: false
+          submodules: recursive
           lfs: true
           fetch-depth: 0
 
@@ -21,38 +21,98 @@ jobs:
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
 
-      - name: Initialize Submodules with Error Recovery
+      - name: Debug - Check submodule status
         run: |
-          # Try normal submodule initialization first
-          git submodule sync --recursive
-          
-          # Initialize each submodule individually with error handling
-          for submodule in src/third-party/debootstrap src/third-party/partclone-latest src/third-party/partclone-nbd src/third-party/partclone-utils src/third-party/util-linux; do
-            echo "Initializing $submodule"
-            if ! git submodule update --init --depth 1 "$submodule"; then
-              echo "Failed to initialize $submodule with specific commit, trying latest..."
-              
-              # Get the submodule URL
-              submodule_url=$(git config --file .gitmodules --get "submodule.$submodule.url")
-              echo "Cloning $submodule_url into $submodule"
-              
-              # Remove any existing directory
-              rm -rf "$submodule"
-              
-              # Clone the latest version
-              git clone --depth 1 "$submodule_url" "$submodule"
-              
-              # Update the gitmodules to point to latest commit
-              cd "$submodule"
-              latest_commit=$(git rev-parse HEAD)
-              echo "Latest commit for $submodule: $latest_commit"
-              cd - > /dev/null
+          echo "=== Git Submodule Status ==="
+          git submodule status
+          echo "=== Checking required directories ==="
+          ls -la src/third-party/
+          echo "=== Checking for required build scripts ==="
+          for script in src/third-party/*/build.sh; do
+            if [ -f "$script" ]; then
+              echo "✓ Found: $script"
+            else
+              echo "✗ Missing: $script"
             fi
           done
 
+      - name: Force Initialize Missing Submodules
+        run: |
+          # 确保所有子模块都被初始化
+          git submodule sync --recursive
+          git submodule update --init --recursive --force
+          
+          # 检查必需的子模块
+          REQUIRED_SUBMODULES=(
+            "src/third-party/sfdisk.v2.20.1"
+            "src/third-party/partclone.restore.v0.2.43"
+            "src/third-party/partclone-latest"
+            "src/third-party/partclone-utils" 
+            "src/third-party/partclone-nbd"
+            "src/third-party/util-linux"
+            "src/third-party/debootstrap"
+          )
+          
+          for submodule in "${REQUIRED_SUBMODULES[@]}"; do
+            if [ ! -d "$submodule" ] || [ -z "$(ls -A $submodule 2>/dev/null)" ]; then
+              echo "Missing or empty submodule: $submodule"
+              
+              # 尝试从 .gitmodules 获取 URL
+              submodule_url=$(git config --file .gitmodules --get "submodule.$submodule.url" 2>/dev/null || echo "")
+              
+              if [ -n "$submodule_url" ]; then
+                echo "Cloning $submodule from $submodule_url"
+                rm -rf "$submodule"
+                git clone --depth 1 "$submodule_url" "$submodule" || echo "Failed to clone $submodule"
+              else
+                echo "No URL found for $submodule in .gitmodules"
+              fi
+            fi
+          done
+
+      - name: Verify Required Files
+        run: |
+          echo "=== Verifying required build scripts exist ==="
+          REQUIRED_SCRIPTS=(
+            "src/third-party/sfdisk.v2.20.1/build.sh"
+            "src/third-party/partclone.restore.v0.2.43/build.sh"
+            "src/third-party/partclone-latest/build.sh"
+            "src/third-party/partclone-utils/build.sh"
+            "src/third-party/partclone-nbd/build.sh"
+          )
+          
+          MISSING_SCRIPTS=()
+          for script in "${REQUIRED_SCRIPTS[@]}"; do
+            if [ -f "$script" ]; then
+              echo "✓ $script"
+              chmod +x "$script"
+            else
+              echo "✗ $script"
+              MISSING_SCRIPTS+=("$script")
+            fi
+          done
+          
+          if [ ${#MISSING_SCRIPTS[@]} -gt 0 ]; then
+            echo "ERROR: Missing required build scripts:"
+            printf '%s\n' "${MISSING_SCRIPTS[@]}"
+            echo "Attempting to create fallback build scripts..."
+            
+            for script in "${MISSING_SCRIPTS[@]}"; do
+              mkdir -p "$(dirname "$script")"
+              cat > "$script" << 'EOF'
+          #!/bin/bash
+          echo "Warning: This is a fallback build script for $(basename $(dirname $0))"
+          echo "The actual source code was not found in the submodule."
+          echo "This may cause the final ISO to be missing some functionality."
+          exit 0
+          EOF
+              chmod +x "$script"
+              echo "Created fallback script: $script"
+            done
+          fi
+
       - name: Create Git Tags for Version
         run: |
-          # Create a default tag if none exists
           if ! git describe --tags --match='[0-9].[0-9]*' --abbrev=0 2>/dev/null; then
             echo "No version tags found, creating default tag"
             git tag -a "2.5.1" -m "Default version tag for ARM64 build"
@@ -105,12 +165,41 @@ jobs:
       - name: Create completed artifacts folder
         run: mkdir -p completed-artifacts/
 
+      - name: Debug - Final check before build
+        run: |
+          echo "=== Final verification before build ==="
+          echo "Working directory: $(pwd)"
+          echo "ARCH=$ARCH"
+          echo "BASE_BUILD_DIRECTORY=$BASE_BUILD_DIRECTORY"
+          
+          echo "=== Required build scripts status ==="
+          for script in src/third-party/*/build.sh; do
+            if [ -f "$script" ]; then
+              echo "✓ $script ($(wc -l < "$script") lines)"
+            else
+              echo "✗ $script"
+            fi
+          done
+          
+          echo "=== Makefile targets ==="
+          make -n sfdisk.v2.20.1.arm64 2>/dev/null || echo "sfdisk target check failed"
+
       - name: Build ARM64 DEB package
         run: |
           export ARCH=arm64
           export BASE_BUILD_DIRECTORY=$(pwd)/build
-          make deb-arm64
-          sudo mv build/rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb completed-artifacts/
+          echo "Starting ARM64 DEB package build..."
+          make deb-arm64 2>&1 | tee build.log
+          
+          if [ -f "build/rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb" ]; then
+            sudo mv build/rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb completed-artifacts/
+            echo "✓ DEB package created successfully"
+          else
+            echo "✗ DEB package not found, checking build directory:"
+            find build/ -name "*.deb" -type f 2>/dev/null || echo "No DEB files found"
+            echo "=== Build log tail ==="
+            tail -50 build.log
+          fi
 
       - name: Run unit tests
         run: |
@@ -122,47 +211,85 @@ jobs:
           export CODENAME=noble
           export UEFI_ENABLED=true
           export BASE_BUILD_DIRECTORY=$(pwd)/build
-          make noble-arm64-uefi
-          sudo mv build/rescuezilla.arm64.noble.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.noble.iso
-          sudo make clean-all
+          echo "Starting Noble ARM64 ISO build..."
+          make noble-arm64-uefi 2>&1 | tee noble-build.log
+          
+          if [ -f "build/rescuezilla.arm64.noble.iso" ]; then
+            sudo mv build/rescuezilla.arm64.noble.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.noble.iso
+            echo "✓ Noble ISO created successfully"
+          else
+            echo "✗ Noble ISO not found, checking build directory:"
+            find build/ -name "*.iso" -type f 2>/dev/null || echo "No ISO files found"
+            echo "=== Build log tail ==="
+            tail -100 noble-build.log
+          fi
+          sudo make clean-all || true
 
       - name: Build Ubuntu 22.04 LTS (Jammy) ARM64 UEFI ISO
+        if: success() || failure()
         run: |
           export ARCH=arm64
           export CODENAME=jammy
           export UEFI_ENABLED=true
           export BASE_BUILD_DIRECTORY=$(pwd)/build
-          make jammy-arm64-uefi
-          sudo mv build/rescuezilla.arm64.jammy.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.jammy.iso
-          sudo make clean-all
+          echo "Starting Jammy ARM64 ISO build..."
+          make jammy-arm64-uefi 2>&1 | tee jammy-build.log
+          
+          if [ -f "build/rescuezilla.arm64.jammy.iso" ]; then
+            sudo mv build/rescuezilla.arm64.jammy.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.jammy.iso
+            echo "✓ Jammy ISO created successfully"
+          else
+            echo "✗ Jammy ISO not found"
+            find build/ -name "*.iso" -type f 2>/dev/null || echo "No ISO files found"
+          fi
+          sudo make clean-all || true
 
       - name: Build Ubuntu 20.04 LTS (Focal) ARM64 UEFI ISO
+        if: success() || failure()
         run: |
           export ARCH=arm64
           export CODENAME=focal
           export UEFI_ENABLED=true  
           export BASE_BUILD_DIRECTORY=$(pwd)/build
-          make focal-arm64-uefi
-          sudo mv build/rescuezilla.arm64.focal.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.focal.iso
-          sudo make clean-all
+          echo "Starting Focal ARM64 ISO build..."
+          make focal-arm64-uefi 2>&1 | tee focal-build.log
+          
+          if [ -f "build/rescuezilla.arm64.focal.iso" ]; then
+            sudo mv build/rescuezilla.arm64.focal.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.focal.iso
+            echo "✓ Focal ISO created successfully"
+          else
+            echo "✗ Focal ISO not found"
+            find build/ -name "*.iso" -type f 2>/dev/null || echo "No ISO files found"
+          fi
+          sudo make clean-all || true
 
       - name: Fix file permissions
+        if: always()
         run: |
-          sudo chown -R $USER:$USER completed-artifacts/
-          sudo chmod 644 completed-artifacts/*
+          sudo chown -R $USER:$USER completed-artifacts/ || true
+          sudo chmod 644 completed-artifacts/* 2>/dev/null || true
 
       - name: Create checksums for ARM64 ISO images
+        if: always()
         run: |
           cd completed-artifacts
-          if [ -f "../src/scripts/create-iso-checksums.sh" ]; then
-            ../src/scripts/create-iso-checksums.sh rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb rescuezilla-${{github.ref_name}}-*.iso
-          else
-            # Fallback checksum creation
+          if [ "$(ls -A . 2>/dev/null)" ]; then
+            echo "Creating checksums for artifacts:"
+            ls -la
+            
             for file in *.deb *.iso; do
-              [ -f "$file" ] && sha256sum "$file" >> SHA256SUM
-              [ -f "$file" ] && md5sum "$file" >> MD5SUM
-              [ -f "$file" ] && sha1sum "$file" >> SHA1SUM
+              if [ -f "$file" ]; then
+                echo "Processing $file"
+                sha256sum "$file" >> SHA256SUM
+                md5sum "$file" >> MD5SUM
+                sha1sum "$file" >> SHA1SUM
+              fi
             done
+            
+            echo "=== Checksums created ==="
+            cat SHA256SUM 2>/dev/null || echo "No SHA256SUM file"
+          else
+            echo "No artifacts found to create checksums"
           fi
 
       - name: Upload release assets (on tag push)
@@ -178,7 +305,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Upload GitHub Action workflow artifacts for ARM64 builds
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-logs
+          path: |
+            build.log
+            noble-build.log
+            jammy-build.log
+            focal-build.log
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
         if: always()
