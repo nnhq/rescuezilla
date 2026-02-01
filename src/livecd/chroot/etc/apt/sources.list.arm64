@@ -1,0 +1,11 @@
+# Ubuntu ARM64 ports repository
+deb http://ports.ubuntu.com/ubuntu-ports/ CODENAME_SUBSTITUTE main restricted universe multiverse
+deb http://ports.ubuntu.com/ubuntu-ports/ CODENAME_SUBSTITUTE-updates main restricted universe multiverse
+deb http://ports.ubuntu.com/ubuntu-ports/ CODENAME_SUBSTITUTE-security main restricted universe multiverse
+deb http://ports.ubuntu.com/ubuntu-ports/ CODENAME_SUBSTITUTE-backports main restricted universe multiverse
+deb http://ports.ubuntu.com/ubuntu-ports/ CODENAME_SUBSTITUTE-proposed main restricted universe multiverse
+
+# Additional sources for specific packages
+deb-src http://ports.ubuntu.com/ubuntu-ports/ CODENAME_SUBSTITUTE main restricted universe multiverse
+deb-src http://ports.ubuntu.com/ubuntu-ports/ CODENAME_SUBSTITUTE-updates main restricted universe multiverse
+deb-src http://ports.ubuntu.com/ubuntu-ports/ CODENAME_SUBSTITUTE-security main restricted universe multiverse
