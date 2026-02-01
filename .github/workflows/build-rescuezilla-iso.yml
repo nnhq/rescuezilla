@@ -3,11 +3,6 @@
 on: [push]
 jobs:
   rescuezilla-iso-build:
-    # The build bot OS environment does not really matter, as the docker image
-    # provides the primary host environment for the build. However, a more recent
-    # OS provides a more recent Docker release, which means additional Docker
-    # functionality.
-    # Launches Docker container to act as 'host system'. See BUILD.ISO.IMAGE.md for more information.
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -32,83 +27,73 @@ jobs:
           ./generate-release-notes.sh ${{github.ref_name}} "oracular" > /tmp/release-notes.md
           echo "RELEASE_DATE=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
 
-      - name: Build Docker image
-        run: make docker-build
+      - name: Build Docker image for ARM64
+        run: make docker-build-arm64
 
-      - name: Launch Docker container
-        run: make docker-run
+      - name: Launch Docker container for ARM64
+        run: make docker-run-arm64
 
       - name: Trust the git folder
         run: make docker-add-safe-directory
-
-      - name: Run linting within the Docker container
-        run: make docker-check
-
-      - name: Run unit tests within the Docker container
-        run: make docker-test
 
       - name: Create completed artifacts folder
         run: mkdir completed-artifacts/
 
       - run: make docker-status
-      - name: Make DEB package
-        run: make docker-deb
-      - run: sudo mv build/rescuezilla_${{env.DEB_VERSION}}-1_all.deb completed-artifacts/rescuezilla_${{env.DEB_VERSION}}-1_all.deb
+      - name: Make ARM64 DEB package
+        run: make docker-deb-arm64
+      - run: sudo mv build/rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb completed-artifacts/rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb
+
+      - name: Run unit tests within the Docker container
+        run: make docker-test
 
       - run: make docker-status
-      - name: Make Ubuntu 25.04 (Plucky) ISO
-        run: make docker-plucky
-      - run: sudo mv build/rescuezilla.amd64.plucky.iso completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.plucky.iso
+      - name: Make Ubuntu 25.04 (Plucky) ARM64 UEFI ISO
+        run: make docker-plucky-arm64-uefi
+      - run: sudo mv build/rescuezilla.arm64.plucky.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.plucky.iso
       - run: sudo make clean-all
 
       - run: make docker-status
-      - name: Make Ubuntu 24.04 LTS (Noble) ISO
-        run: make docker-noble
-      - run: sudo mv build/rescuezilla.amd64.noble.iso completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.noble.iso
+      - name: Make Ubuntu 24.04 LTS (Noble) ARM64 UEFI ISO
+        run: make docker-noble-arm64-uefi
+      - run: sudo mv build/rescuezilla.arm64.noble.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.noble.iso
       - run: sudo make clean-all
 
       - run: make docker-status
-      - name: Make Ubuntu 24.10 (Oracular) ISO
-        run: make docker-oracular
-      - run: sudo mv build/rescuezilla.amd64.oracular.iso completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.oracular.iso
+      - name: Make Ubuntu 24.10 (Oracular) ARM64 UEFI ISO
+        run: make docker-oracular-arm64-uefi
+      - run: sudo mv build/rescuezilla.arm64.oracular.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.oracular.iso
       - run: sudo make clean-all
 
       - run: make docker-status
-      - name: Make Ubuntu 22.04 LTS (Jammy) ISO [LTS  = Long Term Support]
-        run: make docker-jammy
-      - run: sudo mv build/rescuezilla.amd64.jammy.iso completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.jammy.iso
+      - name: Make Ubuntu 22.04 LTS (Jammy) ARM64 UEFI ISO [LTS = Long Term Support]
+        run: make docker-jammy-arm64-uefi
+      - run: sudo mv build/rescuezilla.arm64.jammy.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.jammy.iso
       - run: sudo make clean-all
 
       - run: make docker-status
-      - name: Make Ubuntu 20.04 LTS (Focal) ISO [LTS  = Long Term Support]
-        run: make docker-focal
-      - run: sudo mv build/rescuezilla.amd64.focal.iso completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.focal.iso
+      - name: Make Ubuntu 20.04 LTS (Focal) ARM64 UEFI ISO [LTS = Long Term Support]
+        run: make docker-focal-arm64-uefi
+      - run: sudo mv build/rescuezilla.arm64.focal.iso completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.focal.iso
       - run: sudo make clean-all
 
-      - run: make docker-status
-      - name: Make Ubuntu 18.04 LTS (Bionic) ISO (i386)
-        run: make docker-bionic-i386
-      - run: sudo mv build/rescuezilla.i386.bionic.iso completed-artifacts/rescuezilla-${{github.ref_name}}-32bit.bionic.iso
-      - run: sudo make clean-all
-
-      - name: Create checksums for ISO images
-        run: cd completed-artifacts && sudo ../src/scripts/create-iso-checksums.sh rescuezilla_${{env.DEB_VERSION}}-1_all.deb  rescuezilla-${{github.ref_name}}-*.iso
+      - name: Create checksums for ARM64 ISO images
+        run: cd completed-artifacts && sudo ../src/scripts/create-iso-checksums.sh rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb  rescuezilla-${{github.ref_name}}-*.iso
 
       - name: Upload release assets (on tag push)
         uses: softprops/action-gh-release@v1
         if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
         with:
-          name: v${{github.ref_name}} (${{env.RELEASE_DATE}})
+          name: v${{github.ref_name}} (${{env.RELEASE_DATE}}) ARM64
           body_path: /tmp/release-notes.md
           files: |
             completed-artifacts/*SUM
-            completed-artifacts/rescuezilla_${{env.DEB_VERSION}}-1_all.deb
+            completed-artifacts/rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb
             completed-artifacts/rescuezilla-${{github.ref_name}}-*.iso
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Upload GitHub Action workflow *artifacts*. Note "artifacts" are a different concept to GitHub release rssets. The former is available on each GitHub Actions
-      # workflow run. The latter is associated with only a pushed tag.
+      # Upload GitHub Action workflow artifacts for ARM64 builds
 
       - uses: actions/upload-artifact@v4
         with:
@@ -127,31 +112,30 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rescuezilla_${{env.DEB_VERSION}}-1_all.deb
-          path: completed-artifacts/rescuezilla_${{env.DEB_VERSION}}-1_all.deb
+          name: rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb
+          path: completed-artifacts/rescuezilla_${{env.DEB_VERSION}}-1_arm64.deb
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rescuezilla-${{github.ref_name}}-64bit.oracular.iso
-          path: completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.oracular.iso
+          name: rescuezilla-${{github.ref_name}}-arm64.plucky.iso
+          path: completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.plucky.iso
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rescuezilla-${{github.ref_name}}-64bit.noble.iso
-          path: completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.noble.iso
+          name: rescuezilla-${{github.ref_name}}-arm64.oracular.iso
+          path: completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.oracular.iso
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rescuezilla-${{github.ref_name}}-64bit.jammy.iso
-          path: completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.jammy.iso
+          name: rescuezilla-${{github.ref_name}}-arm64.noble.iso
+          path: completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.noble.iso
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rescuezilla-${{github.ref_name}}-64bit.focal.iso
-          path: completed-artifacts/rescuezilla-${{github.ref_name}}-64bit.focal.iso
+          name: rescuezilla-${{github.ref_name}}-arm64.jammy.iso
+          path: completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.jammy.iso
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rescuezilla-${{github.ref_name}}-32bit.bionic.iso
-          path: completed-artifacts/rescuezilla-${{github.ref_name}}-32bit.bionic.iso
-
+          name: rescuezilla-${{github.ref_name}}-arm64.focal.iso
+          path: completed-artifacts/rescuezilla-${{github.ref_name}}-arm64.focal.iso
