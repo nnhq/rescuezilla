@@ -1,9 +1,6 @@
 .DEFAULT_GOAL := noble-arm64-uefi
 .PHONY: all focal-arm64-uefi jammy-arm64-uefi noble-arm64-uefi deb-arm64 sfdisk.v2.20.1.arm64 partclone.restore.v0.2.43.arm64 partclone-latest-arm64 partclone-utils-arm64 partclone-nbd-arm64 install test integration-test clean-build-dir clean clean-all
 
-# Docker-related targets for ARM64
-.PHONY: docker-build-arm64 docker-run-arm64 docker-add-safe-directory docker-status docker-test docker-focal-arm64-uefi docker-jammy-arm64-uefi docker-noble-arm64-uefi docker-deb-arm64
-
 BASE_BUILD_DIRECTORY ?= $(shell pwd)/build
 
 # Set threads variable to N-1 cpu cores.
@@ -76,61 +73,28 @@ export ARCH
 partclone-nbd-arm64:
 	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) src/third-party/partclone-nbd/build.sh
 
-# Docker targets for ARM64 - Build on native architecture (x86_64 in GitHub Actions)
-docker-build-arm64:
-	@echo "Building Docker image rescuezilla-build-arm64..."
-	docker build -f Dockerfile.dev -t rescuezilla-build-arm64:latest .
-	@echo "Docker image built successfully"
-
-docker-run-arm64:
-	@echo "Starting Docker container rescuezilla-build-arm64..."
-	docker run --rm -d --name rescuezilla-build-arm64 --privileged -v $(PWD):/rescuezilla rescuezilla-build-arm64:latest
-
-docker-add-safe-directory:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && git config --global --add safe.directory /rescuezilla"
-
-docker-status:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && pwd && whoami && git status"
-
-docker-test:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make test"
-
-docker-focal-arm64-uefi:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make focal-arm64-uefi"
-
-docker-jammy-arm64-uefi:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make jammy-arm64-uefi"
-
-docker-noble-arm64-uefi:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make noble-arm64-uefi"
-
-docker-deb-arm64:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make deb-arm64"
-
 install:
 	@echo "WARNING: The 'install' target does not work yet for ARM64 builds."
 	@echo "Please file a bug report at https://github.com/rescuezilla/rescuezilla/issues to ask for this feature."
 
-# Run unit tests for ARM64 (assume Python tests are architecture-independent)
+# Run unit tests for ARM64
 test:
 	LANG=en_GB.UTF-8 python3 -m pytest src/apps/rescuezilla/rescuezilla/test/ --capture=no
 
-# Run integration tests for ARM64 (these would need significant modification)
+# Run integration tests for ARM64
 integration-test:
 	@echo "WARNING: Integration tests may not work correctly for ARM64."
 	@echo "This would require ARM64 test images and proper configuration."
 	cd src/integration-test && sudo -E ./run.all.tests.sh
 
 clean-build-dir:
-	if mountpoint -q $(BASE_BUILD_DIRECTORY)/chroot/proc/; then sudo umount $(BASE_BUILD_DIRECTORY)/chroot/proc/; fi
-	if mountpoint -q $(BASE_BUILD_DIRECTORY)/chroot/sys/; then sudo umount $(BASE_BUILD_DIRECTORY)/chroot/sys/; fi
-	if mountpoint -q $(BASE_BUILD_DIRECTORY)/chroot/dev/; then sudo umount $(BASE_BUILD_DIRECTORY)/chroot/dev/; fi
-	if mountpoint -q $(BASE_BUILD_DIRECTORY)/chroot/tmp/; then sudo umount $(BASE_BUILD_DIRECTORY)/chroot/tmp/; fi
+	if mountpoint -q $(BASE_BUILD_DIRECTORY)/*/chroot/proc/ 2>/dev/null; then sudo umount $(BASE_BUILD_DIRECTORY)/*/chroot/proc/; fi
+	if mountpoint -q $(BASE_BUILD_DIRECTORY)/*/chroot/sys/ 2>/dev/null; then sudo umount $(BASE_BUILD_DIRECTORY)/*/chroot/sys/; fi
+	if mountpoint -q $(BASE_BUILD_DIRECTORY)/*/chroot/dev/ 2>/dev/null; then sudo umount $(BASE_BUILD_DIRECTORY)/*/chroot/dev/; fi
+	if mountpoint -q $(BASE_BUILD_DIRECTORY)/*/chroot/tmp/ 2>/dev/null; then sudo umount $(BASE_BUILD_DIRECTORY)/*/chroot/tmp/; fi
 	sudo rm -rf $(BASE_BUILD_DIRECTORY)/
 
 clean: clean-build-dir
 
 clean-all: clean
-	rm -rf $(BASE_BUILD_DIRECTORY)/ 
-	docker stop rescuezilla-build-arm64 2>/dev/null || true
-	docker rm rescuezilla-build-arm64 2>/dev/null || true
+	rm -rf $(BASE_BUILD_DIRECTORY)/
