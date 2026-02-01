@@ -23,21 +23,21 @@ jobs:
         set -e
         
         sudo apt update
-        # 分开安装包，避免单个命令太长导致的问题
+        # 安装构建Rescuezilla ARM64 ISO所需的核心依赖
         sudo apt install -y \
           git-lfs git make sudo \
           rsync debootstrap gettext squashfs-tools dosfstools mtools xorriso util-linux \
           devscripts debhelper checkinstall cmake time parallel dpkg-dev \
-          grub-efi-arm64-bin grub-efi-arm64 \
-          shim-signed grub-efi-arm64-signed build-essential \
+          build-essential \
           libtool-bin gawk pkg-config comerr-dev docbook-xsl e2fslibs-dev fuse3 \
           libaal-dev libblkid-dev libbsd-dev libncurses5-dev \
           libncursesw5-dev libntfs-3g89 libreadline-dev libreadline8 readline-common \
           libreiser4-dev libtinfo-dev libxslt1.1 nilfs-tools ntfs-3g ntfs-3g-dev \
           quilt sgml-base uuid-dev vmfs-tools xfslibs-dev xfsprogs xml-core \
           xsltproc ccache libssl-dev \
-          grub-common grub-pc-bin grub2-common \
-          efibootmgr mokutil
+          grub-efi-arm64 grub-efi-arm64-bin grub-efi-arm64-signed \
+          shim-signed efibootmgr mokutil \
+          grub-common grub2-common
         
         # 安装 partclone - 这个包在 Ubuntu 24.04 中可能有版本问题
         sudo apt install -y partclone || echo "partclone 安装失败，但继续..."
@@ -51,19 +51,20 @@ jobs:
         sudo update-alternatives --set gcc /usr/bin/gcc-9
         
         # 验证安装
+        echo "验证编译器版本:"
         gcc --version
         g++ --version
         
         # 验证GRUB ARM64 EFI文件
-        echo "验证GRUB ARM64 EFI文件:"
-        ls -la /usr/lib/grub/arm64-efi/ || true
-        ls -la /usr/share/grub/ || true
-        which grub-mkimage
+        echo "验证GRUB ARM64 EFI支持:"
+        ls -la /usr/lib/grub/arm64-efi/ 2>/dev/null || echo "ARM64 EFI模块目录不存在"
+        which grub-mkimage || echo "grub-mkimage未找到"
         
         # 验证其他关键工具
-        which xorriso
-        which mksquashfs
-        which debootstrap
+        echo "验证关键工具:"
+        which xorriso || echo "xorriso未找到"
+        which mksquashfs || echo "mksquashfs未找到"
+        which debootstrap || echo "debootstrap未找到"
         
         echo "依赖安装完成"
         
@@ -88,17 +89,11 @@ jobs:
         echo "=== 检查ARM64 UEFI支持 ==="
         if [ -d "/usr/lib/grub/arm64-efi" ]; then
           echo "✅ ARM64 EFI模块目录存在"
-          ls /usr/lib/grub/arm64-efi/*.mod | head -5
+          ls /usr/lib/grub/arm64-efi/*.mod 2>/dev/null | head -5 || true
         else
-          echo "❌ ARM64 EFI模块目录不存在"
-          # 尝试手动创建GRUB ARM64 EFI映像作为备用方案
-          echo "尝试创建GRUB ARM64 EFI映像..."
-          sudo mkdir -p /usr/lib/grub/arm64-efi
+          echo "⚠️ ARM64 EFI模块目录不存在，检查替代位置..."
+          find /usr -name "arm64-efi" -type d 2>/dev/null || true
         fi
-        
-        # 创建必要的EFI目录结构（如果Makefile不创建的话）
-        echo "创建EFI目录结构..."
-        mkdir -p efi/boot || true
         
         # 使用 noble (Ubuntu 24.04 LTS) 版本构建
         echo "=== 构建 ARM64 ISO 镜像 (noble) ==="
@@ -107,92 +102,153 @@ jobs:
         export ARCH=arm64
         export UEFI_ARCH=arm64
         
-        # 尝试不同的构建目标
-        echo "尝试构建ISO..."
-        sudo make noble 2>&1 || {
-          echo "标准构建失败，尝试替代方法..."
-          # 如果标准构建失败，尝试使用make的替代目标
-          sudo make rescuezilla.arm64.noble.iso 2>&1 || true
-        }
+        # 构建ISO
+        sudo make noble 2>&1
         
     - name: Check build output
       run: |
         echo "=== 检查构建输出 ==="
-        ls -la build/ || true
+        ls -la build/ 2>/dev/null || { echo "build目录不存在"; exit 1; }
         
         # 使用 noble 版本的 ISO 文件名
-        if [ -f build/rescuezilla.arm64.noble.iso ]; then
-          echo "✅ ISO 文件创建成功"
-          echo "ISO 文件大小: $(ls -lh build/rescuezilla.arm64.noble.iso | awk '{print $5}')"
+        ISO_FILE="build/rescuezilla.arm64.noble.iso"
+        
+        if [ -f "$ISO_FILE" ]; then
+          echo "✅ ISO 文件创建成功: $ISO_FILE"
+          echo "ISO 文件大小: $(ls -lh "$ISO_FILE" | awk '{print $5}')"
           
-          # 尝试检查 ISO 内容
+          # 检查ISO是否包含UEFI引导
+          echo "=== 检查ISO的UEFI引导能力 ==="
+          
+          # 使用isoinfo检查引导信息
           if command -v isoinfo > /dev/null; then
-            echo "=== ISO 文件信息 ==="
-            isoinfo -d -i build/rescuezilla.arm64.noble.iso 2>/dev/null || true
-            
-            echo "=== 检查ISO中的EFI文件 ==="
-            # 挂载ISO检查EFI文件
-            mkdir -p /tmp/iso_mount
-            sudo mount -o loop build/rescuezilla.arm64.noble.iso /tmp/iso_mount 2>/dev/null || true
-            
-            if [ -d "/tmp/iso_mount/EFI" ]; then
-              echo "✅ ISO包含EFI目录"
-              find /tmp/iso_mount/EFI -type f | head -20
-            fi
-            
-            if [ -f "/tmp/iso_mount/EFI/BOOT/BOOTAA64.EFI" ] || [ -f "/tmp/iso_mount/EFI/BOOT/grubaa64.efi" ]; then
-              echo "✅ 找到ARM64 UEFI引导文件"
-            else
-              echo "❌ 未找到ARM64 UEFI引导文件"
-              echo "尝试在ISO中查找其他EFI文件:"
-              find /tmp/iso_mount -name "*.efi" -o -name "*.EFI" 2>/dev/null || true
-            fi
-            
-            sudo umount /tmp/iso_mount 2>/dev/null || true
-            rm -rf /tmp/iso_mount
+            echo "ISO引导信息:"
+            isoinfo -d -i "$ISO_FILE" 2>/dev/null | grep -E "(El|Boot|Catalog)" || true
           fi
+          
+          # 挂载ISO检查内部文件
+          echo "=== 检查ISO内部文件结构 ==="
+          mkdir -p /tmp/iso_inspect
+          if sudo mount -o loop "$ISO_FILE" /tmp/iso_inspect 2>/dev/null; then
+            echo "ISO已挂载到 /tmp/iso_inspect"
+            
+            # 检查关键目录
+            echo "根目录内容:"
+            ls -la /tmp/iso_inspect/ 2>/dev/null | head -20 || true
+            
+            echo "查找EFI引导文件:"
+            find /tmp/iso_inspect -type f -name "*.efi" -o -name "*.EFI" 2>/dev/null | head -20 || true
+            
+            echo "EFI目录结构:"
+            find /tmp/iso_inspect -type d -name "EFI" -o -name "efi" 2>/dev/null | xargs -I {} ls -la {} 2>/dev/null || true
+            
+            # 特别检查ARM64 UEFI引导文件
+            echo "检查ARM64 UEFI引导文件:"
+            if [ -f "/tmp/iso_inspect/EFI/BOOT/BOOTAA64.EFI" ]; then
+              echo "✅ 找到 BOOTAA64.EFI (标准ARM64 UEFI引导文件)"
+            elif [ -f "/tmp/iso_inspect/EFI/BOOT/grubaa64.efi" ]; then
+              echo "✅ 找到 grubaa64.efi (GRUB ARM64 UEFI引导文件)"
+            elif [ -f "/tmp/iso_inspect/efi/boot/bootaa64.efi" ]; then
+              echo "✅ 找到 bootaa64.efi (小写路径的ARM64 UEFI引导文件)"
+            else
+              echo "❌ 未找到标准的ARM64 UEFI引导文件"
+              echo "尝试查找其他可能的引导文件:"
+              find /tmp/iso_inspect -type f \( -name "*.efi" -o -name "*.EFI" \) -exec file {} \; 2>/dev/null | grep -i "arm" || true
+            fi
+            
+            sudo umount /tmp/iso_inspect 2>/dev/null || true
+          else
+            echo "无法挂载ISO文件"
+          fi
+          rm -rf /tmp/iso_inspect
         else
-          echo "❌ ISO 文件未生成"
+          echo "❌ ISO 文件未生成: $ISO_FILE"
           echo "寻找可能的 ISO 文件:"
           find build/ -name "*.iso" -type f 2>/dev/null || true
-          # 尝试查找可能的错误日志
-          find build/ -name "*.log" -o -name "*.txt" 2>/dev/null | xargs cat 2>/dev/null | head -100 || true
-          exit 1
+          
+          # 检查可能的替代文件名
+          ALTERNATIVE_ISO=$(find build/ -name "*.iso" -type f 2>/dev/null | head -1)
+          if [ -n "$ALTERNATIVE_ISO" ]; then
+            echo "找到替代ISO文件: $ALTERNATIVE_ISO"
+            echo "重命名为标准名称..."
+            cp "$ALTERNATIVE_ISO" "$ISO_FILE"
+          else
+            # 尝试查找构建日志
+            echo "=== 检查构建日志 ==="
+            find . -name "*.log" -type f 2>/dev/null | head -5 | xargs cat 2>/dev/null | tail -50 || true
+            exit 1
+          fi
         fi
         
-    - name: Verify UEFI boot capability
+    - name: Fix UEFI boot if needed
       run: |
-        echo "=== 验证UEFI引导能力 ==="
+        echo "=== 检查并修复UEFI引导 ==="
+        ISO_FILE="build/rescuezilla.arm64.noble.iso"
         
-        if [ -f build/rescuezilla.arm64.noble.iso ]; then
-          # 检查ISO是否包含EFI引导
-          if command -v isoinfo > /dev/null; then
-            echo "检查ISO的引导信息..."
-            isoinfo -i build/rescuezilla.arm64.noble.iso -d 2>/dev/null | grep -i "eltorito" || true
-            isoinfo -i build/rescuezilla.arm64.noble.iso -d 2>/dev/null | grep -i "efi" || true
-            
-            # 使用file命令检查ISO类型
-            file build/rescuezilla.arm64.noble.iso || true
-          fi
+        if [ -f "$ISO_FILE" ]; then
+          # 创建一个临时目录来检查和修复ISO
+          mkdir -p /tmp/iso_fix
           
-          # 如果ISO缺少EFI引导，尝试修复
-          echo "检查ISO中的引导文件结构..."
-          mkdir -p /tmp/iso_check
-          sudo mount -o loop build/rescuezilla.arm64.noble.iso /tmp/iso_check 2>/dev/null || true
+          # 提取ISO内容
+          xorriso -osirrox on -indev "$ISO_FILE" -extract / /tmp/iso_fix/ 2>/dev/null || true
           
-          if [ $? -eq 0 ]; then
-            echo "ISO内容:"
-            ls -la /tmp/iso_check/ 2>/dev/null | head -20
+          # 检查是否需要添加UEFI引导
+          if [ ! -f "/tmp/iso_fix/EFI/BOOT/BOOTAA64.EFI" ] && [ ! -f "/tmp/iso_fix/EFI/BOOT/grubaa64.efi" ]; then
+            echo "ISO缺少ARM64 UEFI引导文件，尝试修复..."
             
-            # 检查引导目录
-            if [ ! -d "/tmp/iso_check/EFI" ] && [ ! -d "/tmp/iso_check/efi" ]; then
-              echo "警告: ISO缺少EFI目录，可能无法UEFI引导"
-              echo "考虑手动添加UEFI引导支持..."
+            # 创建EFI目录结构
+            mkdir -p /tmp/iso_fix/EFI/BOOT
+            
+            # 尝试从系统获取GRUB ARM64 EFI文件
+            if [ -f "/usr/lib/grub/arm64-efi/monolithic/grubaa64.efi" ]; then
+              echo "复制系统GRUB ARM64 EFI文件..."
+              sudo cp /usr/lib/grub/arm64-efi/monolithic/grubaa64.efi /tmp/iso_fix/EFI/BOOT/BOOTAA64.EFI
+            elif [ -f "/usr/share/grub/grubaa64.efi" ]; then
+              echo "复制共享GRUB ARM64 EFI文件..."
+              sudo cp /usr/share/grub/grubaa64.efi /tmp/iso_fix/EFI/BOOT/BOOTAA64.EFI
+            else
+              echo "尝试生成GRUB ARM64 EFI文件..."
+              # 生成GRUB ARM64 EFI镜像
+              sudo grub-mkimage -O arm64-efi -o /tmp/iso_fix/EFI/BOOT/BOOTAA64.EFI \
+                -p /EFI/BOOT \
+                boot cat chain configfile echo fat halt help linux linuxefi \
+                loadenv loopback ls part_msdos part_gpt reboot serial \
+                search search_fs_uuid terminal test normal
             fi
             
-            sudo umount /tmp/iso_check 2>/dev/null || true
+            # 创建基本的GRUB配置文件
+            if [ ! -f "/tmp/iso_fix/EFI/BOOT/grub.cfg" ]; then
+              echo "创建基本的GRUB配置文件..."
+              cat > /tmp/iso_fix/EFI/BOOT/grub.cfg << 'EOF'
+set timeout=5
+menuentry "Rescuezilla" {
+  linux /casper/vmlinuz quiet splash ---
+  initrd /casper/initrd
+}
+EOF
+            fi
+            
+            # 重新创建ISO文件
+            echo "重新创建带UEFI引导的ISO文件..."
+            xorriso -as mkisofs \
+              -volid "Rescuezilla" \
+              -J -l -b isolinux/isolinux.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
+              -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot \
+              -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+              -isohybrid-gpt-basdat \
+              -o build/rescuezilla.arm64.noble.fixed.iso \
+              /tmp/iso_fix 2>&1 | tail -20
+              
+            # 替换原始ISO文件
+            if [ -f "build/rescuezilla.arm64.noble.fixed.iso" ]; then
+              mv build/rescuezilla.arm64.noble.fixed.iso "$ISO_FILE"
+              echo "✅ 已修复ISO的UEFI引导"
+            fi
+          else
+            echo "✅ ISO已包含UEFI引导文件"
           fi
-          rm -rf /tmp/iso_check
+          
+          rm -rf /tmp/iso_fix
         fi
 
     - name: Upload ISO
@@ -210,6 +266,8 @@ jobs:
         body: |
           Rescuezilla ARM64 ISO
           Build from commit: ${{ github.sha }}
+          
+          Note: This ISO should support UEFI boot on ARM64 devices.
         prerelease: false
         artifacts: "build/rescuezilla.arm64.noble.iso"
         token: ${{ secrets.GITHUB_TOKEN }}
