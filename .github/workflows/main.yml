@@ -31,19 +31,30 @@ jobs:
           libreiser4-dev libtinfo-dev libxslt1.1 nilfs-tools ntfs-3g ntfs-3g-dev \
           quilt sgml-base uuid-dev vmfs-tools xfslibs-dev xfsprogs xml-core \
           xsltproc ccache libssl-dev \
-          grub-efi-arm64 grub-efi-arm64-bin grub-efi-arm64-signed \
+          grub-efi-arm64 grub-efi-arm64-bin \
           grub-common grub2-common \
-          shim-signed efibootmgr ovmf-aarch64
+          efibootmgr
+        
+        # 尝试安装额外的包，允许失败
+        sudo apt install -y grub-efi-arm64-signed || echo "grub-efi-arm64-signed not available"
+        sudo apt install -y shim-signed || echo "shim-signed not available"
+        sudo apt install -y qemu-efi-aarch64 || echo "qemu-efi-aarch64 not available"
+        sudo apt install -y qemu-system-arm || echo "qemu-system-arm not available"
         
         # 安装 partclone
         sudo apt install -y partclone || true
         
         # 安装特定版本的 gcc
-        sudo apt install -y gcc-9 g++-9
+        sudo apt install -y gcc-9 g++-9 || {
+          echo "gcc-9 not available, using default gcc"
+          sudo apt install -y gcc g++
+        }
         
-        # 设置 gcc-9 为默认编译器
-        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 --slave /usr/bin/g++ g++ /usr/bin/g++-9
-        sudo update-alternatives --set gcc /usr/bin/gcc-9
+        # 设置 gcc-9 为默认编译器（如果安装成功）
+        if command -v gcc-9 >/dev/null 2>&1; then
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 --slave /usr/bin/g++ g++ /usr/bin/g++-9
+          sudo update-alternatives --set gcc /usr/bin/gcc-9
+        fi
         
     - name: Initialize git LFS
       run: |
@@ -58,9 +69,16 @@ jobs:
       run: |
         echo "=== 验证 GRUB ARM64 安装 ==="
         ls -la /usr/lib/grub/arm64-efi/ || echo "GRUB ARM64 modules not found"
-        ls -la /usr/lib/grub/arm64-efi/grub.efi || echo "grub.efi not found"
-        ls -la /usr/lib/shim/ || echo "Shim directory not found"
+        find /usr/lib/grub/arm64-efi/ -name "*.mod" | head -5 || echo "No GRUB modules found"
+        
+        # 查找可用的EFI文件
+        find /usr -name "*grub*efi*" -type f 2>/dev/null | head -10
         find /usr -name "*aa64*" -type f 2>/dev/null | head -10
+        find /usr -name "*shim*" -type f 2>/dev/null | head -10
+        
+        echo "=== 检查系统架构 ==="
+        uname -m
+        dpkg --print-architecture
         
     - name: Build ISO
       run: |
@@ -71,7 +89,7 @@ jobs:
         echo "=== 检查ARM64 UEFI支持 ==="
         if [ -d "/usr/lib/grub/arm64-efi" ]; then
           echo "ARM64 EFI模块目录存在"
-          ls -la /usr/lib/grub/arm64-efi/
+          ls -la /usr/lib/grub/arm64-efi/ | head -10
         else
           echo "ARM64 EFI模块目录不存在"
         fi
@@ -103,21 +121,55 @@ jobs:
           # 确保EFI目录结构正确
           sudo mkdir -p /tmp/iso_fix/EFI/BOOT
           
-          # 复制必要的EFI引导文件
+          # 查找并复制EFI引导文件
+          EFI_GRUB=""
+          BOOTAA64_EFI=""
+          
+          # 查找grub EFI文件
+          if [ -f "/usr/lib/grub/arm64-efi/monolithic/grubaa64.efi" ]; then
+            EFI_GRUB="/usr/lib/grub/arm64-efi/monolithic/grubaa64.efi"
+          elif [ -f "/usr/lib/grub/arm64-efi/grub.efi" ]; then
+            EFI_GRUB="/usr/lib/grub/arm64-efi/grub.efi"
+          fi
+          
+          # 查找shim或直接使用grub
           if [ -f "/usr/lib/shim/shimaa64.efi.signed" ]; then
             echo "使用 signed shim"
-            sudo cp /usr/lib/shim/shimaa64.efi.signed /tmp/iso_fix/EFI/BOOT/BOOTAA64.EFI
+            BOOTAA64_EFI="/usr/lib/shim/shimaa64.efi.signed"
           elif [ -f "/usr/lib/shim/shimaa64.efi" ]; then
             echo "使用 unsigned shim"
-            sudo cp /usr/lib/shim/shimaa64.efi /tmp/iso_fix/EFI/BOOT/BOOTAA64.EFI
+            BOOTAA64_EFI="/usr/lib/shim/shimaa64.efi"
+          elif [ -n "$EFI_GRUB" ]; then
+            echo "直接使用 GRUB EFI"
+            BOOTAA64_EFI="$EFI_GRUB"
           else
-            echo "Shim not found, using grub directly"
-            sudo cp /usr/lib/grub/arm64-efi/grub.efi /tmp/iso_fix/EFI/BOOT/BOOTAA64.EFI
+            echo "警告: 未找到合适的EFI引导文件，尝试生成GRUB EFI"
+            # 尝试生成GRUB EFI文件
+            grub-mkstandalone \
+              --format=arm64-efi \
+              --output=/tmp/grubaa64.efi \
+              --locales="" \
+              --fonts="" \
+              "boot/grub/grub.cfg=/tmp/grub_standalone.cfg" || echo "grub-mkstandalone failed"
+            
+            if [ -f "/tmp/grubaa64.efi" ]; then
+              BOOTAA64_EFI="/tmp/grubaa64.efi"
+              EFI_GRUB="/tmp/grubaa64.efi"
+            fi
+          fi
+          
+          # 复制EFI引导文件
+          if [ -n "$BOOTAA64_EFI" ] && [ -f "$BOOTAA64_EFI" ]; then
+            echo "复制 BOOTAA64.EFI 从: $BOOTAA64_EFI"
+            sudo cp "$BOOTAA64_EFI" /tmp/iso_fix/EFI/BOOT/BOOTAA64.EFI
+          else
+            echo "错误: 无法找到BOOTAA64.EFI文件"
           fi
           
           # 复制GRUB EFI文件
-          if [ -f "/usr/lib/grub/arm64-efi/grub.efi" ]; then
-            sudo cp /usr/lib/grub/arm64-efi/grub.efi /tmp/iso_fix/EFI/BOOT/grubaa64.efi
+          if [ -n "$EFI_GRUB" ] && [ -f "$EFI_GRUB" ]; then
+            echo "复制 grubaa64.efi 从: $EFI_GRUB"
+            sudo cp "$EFI_GRUB" /tmp/iso_fix/EFI/BOOT/grubaa64.efi
           fi
           
           # 确保grub.cfg存在且配置正确
@@ -125,7 +177,7 @@ jobs:
           
           if [ ! -f "/tmp/iso_fix/boot/grub/grub.cfg" ]; then
             echo "创建基本的 grub.cfg"
-            sudo tee /tmp/iso_fix/boot/grub/grub.cfg > /dev/null << 'EOF'
+            sudo tee /tmp/iso_fix/boot/grub/grub.cfg > /dev/null <<EOF
         set default=0
         set timeout=10
         
@@ -159,25 +211,20 @@ jobs:
           sudo cp /tmp/iso_fix/boot/grub/grub.cfg /tmp/iso_fix/EFI/BOOT/grub.cfg
           
           # 确保文件权限正确
-          sudo chmod 644 /tmp/iso_fix/EFI/BOOT/*
+          sudo chmod 644 /tmp/iso_fix/EFI/BOOT/* 2>/dev/null || true
           sudo chmod 644 /tmp/iso_fix/boot/grub/grub.cfg
           
           echo "=== 重新生成 ISO ==="
-          # 重新创建ISO
-          sudo xorriso -as mkisofs \
-            -r -V "Rescuezilla" \
-            -J -joliet-long \
-            -cache-inodes \
-            -b isolinux/isolinux.bin \
-            -c isolinux/boot.cat \
-            -boot-load-size 4 \
-            -boot-info-table \
-            -no-emul-boot \
-            -eltorito-alt-boot \
-            -e EFI/BOOT/BOOTAA64.EFI \
-            -no-emul-boot \
-            -boot-load-size 1 \
-            -isohybrid-gpt-basdat \
+          # 重新创建ISO，检查是否存在isolinux
+          XORRISO_ARGS="-r -V 'Rescuezilla' -J -joliet-long -cache-inodes"
+          
+          if [ -f "/tmp/iso_fix/isolinux/isolinux.bin" ]; then
+            XORRISO_ARGS="$XORRISO_ARGS -b isolinux/isolinux.bin -c isolinux/boot.cat -boot-load-size 4 -boot-info-table -no-emul-boot -eltorito-alt-boot"
+          fi
+          
+          XORRISO_ARGS="$XORRISO_ARGS -e EFI/BOOT/BOOTAA64.EFI -no-emul-boot -boot-load-size 1 -isohybrid-gpt-basdat"
+          
+          sudo xorriso -as mkisofs $XORRISO_ARGS \
             -o "${ISO_FILE}.fixed" \
             /tmp/iso_fix/
           
@@ -186,6 +233,7 @@ jobs:
           
           # 清理临时文件
           sudo rm -rf /tmp/iso_fix /tmp/iso_mount
+          rm -f /tmp/grubaa64.efi /tmp/grub_standalone.cfg
         fi
         
     - name: Check build output
@@ -206,7 +254,7 @@ jobs:
           
           if [ -d "/tmp/iso_check/EFI" ]; then
             echo "找到EFI目录:"
-            find /tmp/iso_check/EFI -type f | head -10
+            find /tmp/iso_check/EFI -type f 2>/dev/null | head -10
           fi
           
           # 特别检查ARM64 UEFI引导文件
@@ -264,24 +312,50 @@ jobs:
         ISO_FILE="build/rescuezilla.arm64.noble.iso"
         
         if [ -f "$ISO_FILE" ]; then
-          # 安装qemu如果不存在
-          sudo apt install -y qemu-system-arm qemu-efi-aarch64 || true
-          
-          # 创建UEFI变量存储
-          cp /usr/share/qemu-efi-aarch64/QEMU_VARS.fd /tmp/QEMU_VARS.fd
-          
-          echo "启动 QEMU 测试 (10秒超时)"
-          timeout 10s qemu-system-aarch64 \
-            -M virt \
-            -cpu cortex-a57 \
-            -smp 2 \
-            -m 1024 \
-            -drive if=pflash,format=raw,readonly=on,file=/usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-            -drive if=pflash,format=raw,file=/tmp/QEMU_VARS.fd \
-            -cdrom "$ISO_FILE" \
-            -boot d \
-            -nographic \
-            -serial stdio || echo "QEMU 测试完成 (预期超时)"
+          # 检查QEMU是否可用
+          if command -v qemu-system-aarch64 >/dev/null 2>&1; then
+            echo "QEMU ARM64 可用"
+            
+            # 检查UEFI固件文件
+            UEFI_CODE=""
+            if [ -f "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd" ]; then
+              UEFI_CODE="/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
+            elif [ -f "/usr/share/AAVMF/AAVMF_CODE.fd" ]; then
+              UEFI_CODE="/usr/share/AAVMF/AAVMF_CODE.fd"
+            fi
+            
+            if [ -n "$UEFI_CODE" ]; then
+              echo "找到UEFI固件: $UEFI_CODE"
+              
+              # 创建UEFI变量存储
+              UEFI_VARS="/tmp/QEMU_VARS.fd"
+              if [ -f "/usr/share/qemu-efi-aarch64/QEMU_VARS.fd" ]; then
+                cp /usr/share/qemu-efi-aarch64/QEMU_VARS.fd "$UEFI_VARS"
+              elif [ -f "/usr/share/AAVMF/AAVMF_VARS.fd" ]; then
+                cp /usr/share/AAVMF/AAVMF_VARS.fd "$UEFI_VARS"
+              else
+                # 创建空的变量文件
+                dd if=/dev/zero of="$UEFI_VARS" bs=1M count=64 2>/dev/null
+              fi
+              
+              echo "启动 QEMU 测试 (10秒超时)"
+              timeout 10s qemu-system-aarch64 \
+                -M virt \
+                -cpu cortex-a57 \
+                -smp 2 \
+                -m 1024 \
+                -drive if=pflash,format=raw,readonly=on,file="$UEFI_CODE" \
+                -drive if=pflash,format=raw,file="$UEFI_VARS" \
+                -cdrom "$ISO_FILE" \
+                -boot d \
+                -nographic \
+                -serial stdio || echo "QEMU 测试完成 (预期超时)"
+            else
+              echo "未找到UEFI固件文件，跳过QEMU测试"
+            fi
+          else
+            echo "QEMU ARM64 不可用，跳过测试"
+          fi
         fi
         
     - name: Upload ISO
