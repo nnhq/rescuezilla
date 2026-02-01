@@ -10,9 +10,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
         with:
-          submodules: recursive
+          submodules: false
           lfs: true
           fetch-depth: 0
+
+      - name: Initialize and Update Submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf git://github.com/
+          git config --global url."https://".insteadOf git://
+          git submodule sync --recursive
+          git submodule update --init --recursive --force --depth 1
+
+      - name: Repair Broken Submodules
+        run: |
+          git submodule foreach --recursive git fetch --all --prune
+          git submodule foreach --recursive git reset --hard HEAD
+          git submodule update --recursive --force
 
       # Extract human-readable version string from the most recent CHANGELOG entry
       - run: echo "RESCUEZILLA_RELEASE_NAME=\"$(git grep -h -E -o '[a-zA-Z].*)' CHANGELOG | head -1)\"" >> $GITHUB_ENV
