@@ -1,8 +1,8 @@
-.DEFAULT_GOAL := plucky-arm64-uefi
-.PHONY: all focal-arm64-uefi lunar-arm64-uefi jammy-arm64-uefi oracular-arm64-uefi plucky-arm64-uefi noble-arm64-uefi deb-arm64 sfdisk.v2.20.1.arm64 partclone.restore.v0.2.43.arm64 partclone-latest-arm64 partclone-utils-arm64 partclone-nbd-arm64 install test integration-test clean-build-dir clean clean-all
+.DEFAULT_GOAL := noble-arm64-uefi
+.PHONY: all focal-arm64-uefi jammy-arm64-uefi noble-arm64-uefi deb-arm64 sfdisk.v2.20.1.arm64 partclone.restore.v0.2.43.arm64 partclone-latest-arm64 partclone-utils-arm64 partclone-nbd-arm64 install test integration-test clean-build-dir clean clean-all
 
 # Docker-related targets for ARM64
-.PHONY: docker-build-arm64 docker-run-arm64 docker-add-safe-directory docker-status docker-test docker-focal-arm64-uefi docker-jammy-arm64-uefi docker-noble-arm64-uefi docker-oracular-arm64-uefi docker-plucky-arm64-uefi docker-deb-arm64
+.PHONY: docker-build-arm64 docker-run-arm64 docker-add-safe-directory docker-status docker-test docker-focal-arm64-uefi docker-jammy-arm64-uefi docker-noble-arm64-uefi docker-deb-arm64
 
 BASE_BUILD_DIRECTORY ?= $(shell pwd)/build
 
@@ -12,7 +12,7 @@ THREADS = `cat /proc/cpuinfo | grep process | tail -1 | cut -d":" -f2 | cut -d" 
 # Set shell to bash, so can use 'pipefail' to cause Make to exit when certain commands below (that pipe into tee) fails
 SHELL=/bin/bash
 
-all: focal-arm64-uefi
+all: noble-arm64-uefi
 
 buildscripts = src/scripts/build.sh src/scripts/chroot-steps-part-1.sh src/scripts/chroot-steps-part-2.sh
 
@@ -40,35 +40,19 @@ export ARCH CODENAME UEFI_ENABLED
 noble-arm64-uefi: deb-arm64 sfdisk.v2.20.1.arm64 partclone-latest-arm64 partclone-nbd-arm64 $(buildscripts)
 	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh
 
-# ISO image based on Ubuntu 24.10 Oracular ARM64 with UEFI
-oracular-arm64-uefi: ARCH=arm64
-oracular-arm64-uefi: CODENAME=oracular
-oracular-arm64-uefi: UEFI_ENABLED=true
-export ARCH CODENAME UEFI_ENABLED
-oracular-arm64-uefi: deb-arm64 sfdisk.v2.20.1.arm64 partclone-latest-arm64 partclone-nbd-arm64 $(buildscripts)
-	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh
-
-# ISO image based on Ubuntu 25.04 Plucky ARM64 with UEFI
-plucky-arm64-uefi: ARCH=arm64
-plucky-arm64-uefi: CODENAME=plucky
-plucky-arm64-uefi: UEFI_ENABLED=true
-export ARCH CODENAME UEFI_ENABLED
-plucky-arm64-uefi: deb-arm64 sfdisk.v2.20.1.arm64 partclone-latest-arm64 partclone-nbd-arm64 $(buildscripts)
-	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) /usr/bin/time ./src/scripts/build.sh
-
 # Build Rescuezilla Debian package for ARM64
 deb-arm64: ARCH=arm64
 export ARCH
 deb-arm64: sfdisk.v2.20.1.arm64 partclone.restore.v0.2.43.arm64 partclone-latest-arm64 partclone-utils-arm64 partclone-nbd-arm64 src/livecd/chroot/usr/lib/python3/dist-packages/rescuezilla
 	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) src/scripts/build-deb.sh
 
-# Compile sfdisk v2.20.1 for ARM64 (FIXME: Explain in comment why v2.20.1 is still used in 2024)
+# Compile sfdisk v2.20.1 for ARM64
 sfdisk.v2.20.1.arm64: ARCH=arm64
 export ARCH
 sfdisk.v2.20.1.arm64:
 	BASE_BUILD_DIRECTORY=$(BASE_BUILD_DIRECTORY) src/third-party/sfdisk.v2.20.1/build.sh
 
-# Compile partclone-restore v0.2.43 for ARM64 (FIXME: Explain in comment why v0.2.43 is still used in 2024)  
+# Compile partclone-restore v0.2.43 for ARM64
 partclone.restore.v0.2.43.arm64: ARCH=arm64
 export ARCH
 partclone.restore.v0.2.43.arm64:
@@ -116,12 +100,6 @@ docker-jammy-arm64-uefi:
 
 docker-noble-arm64-uefi:
 	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make noble-arm64-uefi"
-
-docker-oracular-arm64-uefi:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make oracular-arm64-uefi"
-
-docker-plucky-arm64-uefi:
-	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make plucky-arm64-uefi"
 
 docker-deb-arm64:
 	docker exec rescuezilla-build-arm64 bash -c "cd /rescuezilla && make deb-arm64"
